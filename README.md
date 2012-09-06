@@ -1,4 +1,4 @@
 cmfs
 ====
 
-continuous media file system
+Continuous Media File System
