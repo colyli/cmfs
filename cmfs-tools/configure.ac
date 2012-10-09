@@ -8,7 +8,7 @@ AC_CONFIG_HEADERS(include/config.h)
 AM_INIT_AUTOMAKE
 # Checks for programs.
 AC_PROG_CC
-
+AC_PROG_RANLIB
 # Checks for libraries.
 
 # Checks for header files.
