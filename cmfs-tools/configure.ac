@@ -3,7 +3,7 @@
 
 AC_PREREQ([2.69])
 AC_INIT(cmfs-tools, 0.1, i@coly.li)
-AC_CONFIG_SRCDIR([mkfs.cmfs/mkfs.c]])
+AC_CONFIG_SRCDIR([include/config.h.in])
 AC_CONFIG_HEADERS(include/config.h)
 AM_INIT_AUTOMAKE
 # Checks for programs.
