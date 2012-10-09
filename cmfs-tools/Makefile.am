@@ -1,0 +1,1 @@
+SUBDIRS = libcmfs mkfs.cmfs
