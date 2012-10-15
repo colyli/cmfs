@@ -1,5 +1,5 @@
+#include <cmfs/bitmap.h>
 #include <cmfs/cmfs.h>
-
 
 
 struct cmfs_dir_block_trailer *
