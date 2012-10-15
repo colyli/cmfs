@@ -35,8 +35,6 @@
 #include <cmfs/cmfs.h>
 
 
-typedef struct _cmfs_bitmap cmfs_bitmap;
-
 struct cmfs_bitmap_region {
 	struct rb_node br_node;
 	uint64_t br_start_bit;
