@@ -14,6 +14,14 @@
 
 
 /* Returns the number of blocks in a partition */
+#include <com_err.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+
+
 errcode_t ocfs2_get_device_sectsize(const char *file, int *sectsize)
 {
 	int fd;
