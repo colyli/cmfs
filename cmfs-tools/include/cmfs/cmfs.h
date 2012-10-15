@@ -30,17 +30,16 @@
 #define _FILESYS_H
 
 #include <stdint.h>
-
-
 #include <cmfs-kernel/cmfs_fs.h>
 #include <cmfs/cmfs.h>
+#include <cmfs/bitmap.h>
 
 
+typedef struct _cmfs_filesys cmfs_filesys;
 typedef struct _io_channel io_channel;
-
-
-
-
+typedef struct _cmfs_cached_inode cmfs_cached_inode;
+typedef struct _cmfs_dinode cmfs_dinode;
+typedef struct _cmfs_bitmap cmfs_bitmap;
 
 struct _cmfs_filesys {
 	char *fs_devname;
@@ -74,11 +73,15 @@ struct _cmfs_cached_inode {
 	uint64_t ci_blkno;
 	struct cmfs_dinode *ci_inode;
 	cmfs_bitmap *ci_chains;
-}
+};
 
 
 
-
+struct cmfs_cluster_group_sizes {
+	uint16_t cgs_cpg;
+	uint16_t cgs_tail_group_bits;
+	uint32_t cgs_cluster_groups;
+};
 static inline void cmfs_calc_cluster_groups(
 					uint64_t clusters,
 					uint64_t blocksize,
@@ -88,11 +91,11 @@ static inline void cmfs_calc_cluster_groups(
 
 	cgs->cgs_cpg = max_bits;
 	if (max_bits > clusters)
-		cgs->cgs_cgp = clusters;
+		cgs->cgs_cpg = clusters;
 
 	cgs->cgs_cluster_groups = (clusters + cgs->cgs_cpg - 1) /
 				  cgs->cgs_cpg;
-	cgs->cgs_tail_group_bits = clusters % cgs->cgs_cgp;
+	cgs->cgs_tail_group_bits = clusters % cgs->cgs_cpg;
 	if (cgs->cgs_tail_group_bits == 0)
 		cgs->cgs_tail_group_bits = cgs->cgs_cpg;
 }
