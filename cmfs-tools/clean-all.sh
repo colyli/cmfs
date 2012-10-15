@@ -17,3 +17,4 @@ rm -rf missing
 rm -rf mkfs.cmfs/.deps/
 rm -rf mkfs.cmfs/Makefile
 rm -rf mkfs.cmfs/Makefile.in
+rm -rf libcmfs/*.o
