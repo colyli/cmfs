@@ -31,7 +31,7 @@
 #define _BITMAP_H
 
 #include <cmfs/kernel-rbtree.h>
-#include <com_err.h>
+#include <et/com_err.h>
 #include <cmfs/cmfs.h>
 
 

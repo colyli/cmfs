@@ -14,7 +14,7 @@
 
 
 /* Returns the number of blocks in a partition */
-#include <com_err.h>
+#include <et/com_err.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/types.h>
