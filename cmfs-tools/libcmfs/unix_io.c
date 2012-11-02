@@ -32,6 +32,20 @@
 #define _LARGEFILE64_SOURCE
 #define _GNU_SOURCE /* Because libc really doesn't want us using O_DIRECT? */
 
+#include <unistd.h>
+#include <et/com_err.h>
+#include <libaio.h>
+#include <errno.h>
+#include <linux/fs.h>
+#include <fcntl.h>
+#include <string.h>
+#include <sys/resource.h>
+#include <sys/utsname.h>
+#include <cmfs/cmfs.h>
+#include <cmfs-kernel/kernel-list.h>
+#include <cmfs/kernel-rbtree.h>
+#include "cmfs_err.h"
+
 /*
  * We do cached I/O in 1MB hunks, so we need this constant.
  */
@@ -82,7 +96,7 @@ struct _io_channel {
 	int io_flags;
 	int io_error;
 	int io_fd;
-	bool io_nocache;
+	int io_nocache;
 	struct io_cache *io_cache;
 
 	/* stats */
@@ -111,7 +125,7 @@ static errcode_t unix_vec_read_blocks(io_channel *channel,
 	int64_t offset;
 	int submitted, completed = 0;
 
-	ret = OCFS2_ET_NO_MEMORY;
+	ret = CMFS_ET_NO_MEMORY;
 	iocb = malloc((sizeof(struct iocb) * count));
 	iocbs = malloc((sizeof(struct iocb *) * count));
 	events = malloc((sizeof(struct io_event) * count));
@@ -133,7 +147,7 @@ static errcode_t unix_vec_read_blocks(io_channel *channel,
 resubmit:
 	ret = io_submit(io_ctx, count - completed, &iocbs[completed]);
 	if (!ret && (count - completed))
-		ret = OCFS2_ET_SHORT_READ;
+		ret = CMFS_ET_SHORT_READ;
 	if (ret < 0)
 		goto out;
 	submitted = ret;
@@ -174,7 +188,7 @@ static errcode_t unix_io_read_block(io_channel *channel, int64_t blkno,
 	while (tot < size) {
 		rd = pread64(channel->io_fd, data + tot,
 			     size - tot, location + tot);
-		ret = OCFS2_ET_IO;
+		ret = CMFS_ET_IO;
 		if (rd < 0) {
 			channel->io_error = errno;
 			goto out;
@@ -190,7 +204,7 @@ static errcode_t unix_io_read_block(io_channel *channel, int64_t blkno,
 
 out:
 	if (!ret && tot != size) {
-		ret = OCFS2_ET_SHORT_READ;
+		ret = CMFS_ET_SHORT_READ;
 		memset(data + tot, 0, size - tot);
 	}
 
@@ -215,7 +229,7 @@ static errcode_t unix_io_write_block_full(io_channel *channel, int64_t blkno,
 	while (tot < size) {
 		wr = pwrite64(channel->io_fd, data + tot,
  			      size - tot, location + tot);
-		ret = OCFS2_ET_IO;
+		ret = CMFS_ET_IO;
 		if (wr < 0) {
 			channel->io_error = errno;
 			goto out;
@@ -232,7 +246,7 @@ out:
 	if (completed)
 		*completed = tot / channel->io_blksize;
 	if (!ret && (tot != size))
-		ret = OCFS2_ET_SHORT_WRITE;
+		ret = CMFS_ET_SHORT_WRITE;
 
 	channel->io_bytes_written += tot;
 
@@ -343,7 +357,7 @@ static struct io_cache_block *io_cache_pop_lru(struct io_cache *ic)
  */
 static errcode_t io_cache_vec_read_blocks(io_channel *channel,
 					  struct io_vec_unit *ivus,
-					  int count, bool nocache)
+					  int count, int nocache)
 {
 	struct io_cache *ic = channel->io_cache;
 	struct io_cache_block *icb;
@@ -402,7 +416,7 @@ out:
  * of the LRU.  That way they get stolen first.
  */
 static errcode_t io_cache_read_blocks(io_channel *channel, int64_t blkno,
-				      int count, char *data, bool nocache)
+				      int count, char *data, int nocache)
 {
 	int i, good_blocks;
 	errcode_t ret = 0;
@@ -478,7 +492,7 @@ out:
 }
 
 static errcode_t io_cache_read_block(io_channel *channel, int64_t blkno,
-				     int count, char *data, bool nocache)
+				     int count, char *data, int nocache)
 
 {
 	int todo = one_meg_of_blocks(channel);
@@ -511,7 +525,7 @@ static errcode_t io_cache_read_block(io_channel *channel, int64_t blkno,
  */
 static errcode_t io_cache_write_blocks(io_channel *channel, int64_t blkno,
 				       int count, const char *data,
-				       bool nocache)
+				       int nocache)
 {
 	int i, completed = 0;
 	errcode_t ret;
@@ -558,7 +572,7 @@ static errcode_t io_cache_write_blocks(io_channel *channel, int64_t blkno,
 
 static errcode_t io_cache_write_block(io_channel *channel, int64_t blkno,
 				      int count, const char *data,
-				      bool nocache)
+				      int nocache)
 {
 	/*
 	 * Unlike io_read_cache_block(), we're going to do all of the
@@ -611,7 +625,7 @@ errcode_t io_mlock_cache(io_channel *channel)
 	long pages_wanted, avpages;
 
 	if (!ic)
-		return OCFS2_ET_INVALID_ARGUMENT;
+		return CMFS_ET_INVALID_ARGUMENT;
 
 	if (ic->ic_locked)
 		return 0;
@@ -623,7 +637,7 @@ errcode_t io_mlock_cache(io_channel *channel)
 	pages_wanted = channel->io_blksize * ic->ic_nr_blocks / getpagesize();
 	avpages = sysconf(_SC_AVPHYS_PAGES);
 	if (pages_wanted > avpages)
-		return OCFS2_ET_NO_MEMORY;
+		return CMFS_ET_NO_MEMORY;
 
 	rc = mlock(ic->ic_data_buffer, ic->ic_data_buffer_len);
 	if (!rc) {
@@ -633,7 +647,7 @@ errcode_t io_mlock_cache(io_channel *channel)
 	}
 
 	if (rc)
-		return OCFS2_ET_NO_MEMORY;
+		return CMFS_ET_NO_MEMORY;
 
 	ic->ic_locked = 1;
 	return 0;
@@ -705,9 +719,9 @@ size_t io_get_cache_size(io_channel *channel)
 errcode_t io_share_cache(io_channel *from, io_channel *to)
 {
 	if (!from->io_cache)
-		return OCFS2_ET_INTERNAL_FAILURE;
+		return CMFS_ET_INTERNAL_FAILURE;
 	if (to->io_cache)
-		return OCFS2_ET_INTERNAL_FAILURE;
+		return CMFS_ET_INTERNAL_FAILURE;
 	to->io_cache = from->io_cache;
 	from->io_cache->ic_use_count++;
 	return 0;
@@ -715,12 +729,12 @@ errcode_t io_share_cache(io_channel *from, io_channel *to)
 
 static errcode_t io_validate_o_direct(io_channel *channel)
 {
-	errcode_t ret = OCFS2_ET_UNEXPECTED_BLOCK_SIZE;
+	errcode_t ret = CMFS_ET_UNEXPECTED_BLOCK_SIZE;
 	int block_size;
 	char *blk;
 
 	for (block_size = io_get_blksize(channel);
-	     block_size <= OCFS2_MAX_BLOCKSIZE;
+	     block_size <= CMFS_MAX_BLOCKSIZE;
 	     block_size <<= 1) {
 		io_set_blksize(channel, block_size);
 		ret = cmfs_malloc_block(channel, &blk);
@@ -751,13 +765,11 @@ errcode_t io_open(const char *name, int flags, io_channel **channel)
 {
 	errcode_t ret;
 	io_channel *chan = NULL;
-#ifdef __linux__
 	struct stat stat_buf;
 	struct utsname ut;
-#endif
 
 	if (!name || !*name)
-		return OCFS2_ET_BAD_DEVICE_NAME;
+		return CMFS_ET_BAD_DEVICE_NAME;
 
 	ret = cmfs_malloc0(sizeof(struct _io_channel), &chan);
 	if (ret)
@@ -767,10 +779,10 @@ errcode_t io_open(const char *name, int flags, io_channel **channel)
 	if (ret)
 		goto out_chan;
 	strcpy(chan->io_name, name);
-	chan->io_blksize = OCFS2_MIN_BLOCKSIZE;
-	chan->io_flags = (flags & OCFS2_FLAG_RW) ? O_RDWR : O_RDONLY;
-	chan->io_nocache = false;
-	if (!(flags & OCFS2_FLAG_BUFFERED))
+	chan->io_blksize = CMFS_MIN_BLOCKSIZE;
+	chan->io_flags = (flags & CMFS_FLAG_RW) ? O_RDWR : O_RDONLY;
+	chan->io_nocache = 0;
+	if (!(flags & CMFS_FLAG_BUFFERED))
 		chan->io_flags |= O_DIRECT;
 	chan->io_error = 0;
 
@@ -778,13 +790,13 @@ errcode_t io_open(const char *name, int flags, io_channel **channel)
 	if (chan->io_fd < 0) {
 		/* chan will be freed, don't bother with chan->io_error */
 		if (errno == ENOENT)
-			ret = OCFS2_ET_NAMED_DEVICE_NOT_FOUND;
+			ret = CMFS_ET_NAMED_DEVICE_NOT_FOUND;
 		else
-			ret = OCFS2_ET_IO;
+			ret = CMFS_ET_IO;
 		goto out_name;
 	}
 
-	if (!(flags & OCFS2_FLAG_BUFFERED)) {
+	if (!(flags & CMFS_FLAG_BUFFERED)) {
 		ret = io_validate_o_direct(chan);
 		if (ret)
 			goto out_close;  /* FIXME: bindraw here */
@@ -805,7 +817,7 @@ errcode_t io_open(const char *name, int flags, io_channel **channel)
 	 * if glibc wasn't built against 2.2 header files.  (Sigh.)
 	 * 
 	 */
-	if ((flags & OCFS2_FLAG_RW) &&
+	if ((flags & CMFS_FLAG_RW) &&
 	    (uname(&ut) == 0) &&
 	    ((ut.release[0] == '2') && (ut.release[1] == '.') &&
 	     (ut.release[2] == '4') && (ut.release[3] == '.') &&
@@ -865,11 +877,11 @@ int io_get_error(io_channel *channel)
 
 errcode_t io_set_blksize(io_channel *channel, int blksize)
 {
-	if (blksize % OCFS2_MIN_BLOCKSIZE)
-		return OCFS2_ET_INVALID_ARGUMENT;
+	if (blksize % CMFS_MIN_BLOCKSIZE)
+		return CMFS_ET_INVALID_ARGUMENT;
 
 	if (!blksize)
-		blksize = OCFS2_MIN_BLOCKSIZE;
+		blksize = CMFS_MIN_BLOCKSIZE;
 
 	if (channel->io_blksize != blksize)
 		channel->io_blksize = blksize;
@@ -909,7 +921,7 @@ void io_get_stats(io_channel *channel, struct cmfs_io_stats *stats)
  * around.  Smarter code can ignore this function and use the _nocache()
  * functions directly.
  */
-void io_set_nocache(io_channel *channel, bool nocache)
+void io_set_nocache(io_channel *channel, int nocache)
 {
 	channel->io_nocache = nocache;
 }
@@ -939,7 +951,7 @@ errcode_t io_read_block_nocache(io_channel *channel, int64_t blkno, int count,
 {
 	if (channel->io_cache)
 		return io_cache_read_block(channel, blkno, count, data,
-					   true);
+					   1);
 	else
 		return unix_io_read_block(channel, blkno, count, data);
 }
@@ -959,7 +971,7 @@ errcode_t io_write_block_nocache(io_channel *channel, int64_t blkno, int count,
 {
 	if (channel->io_cache)
 		return io_cache_write_block(channel, blkno, count, data,
-					    true);
+					    1);
 	else
 		return unix_io_write_block(channel, blkno, count, data);
 }
@@ -1080,7 +1092,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (blksize % OCFS2_MIN_BLOCKSIZE) {
+	if (blksize % CMFS_MIN_BLOCKSIZE) {
 		fprintf(stderr, "Invalid blocksize: %"PRId64"\n", blksize);
 		print_usage();
 		return 1;
@@ -1110,7 +1122,7 @@ int main(int argc, char *argv[])
 
 	filename = argv[optind];
 
-	ret = io_open(filename, OCFS2_FLAG_RO, &channel);
+	ret = io_open(filename, CMFS_FLAG_RO, &channel);
 	if (ret) {
 		com_err(argv[0], ret,
 			"while opening file \"%s\"", filename);
