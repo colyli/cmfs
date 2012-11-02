@@ -32,8 +32,8 @@
 
 #include <cmfs/kernel-rbtree.h>
 #include <et/com_err.h>
+#include <unistd.h>
 #include <cmfs/cmfs.h>
-
 
 struct cmfs_bitmap_region {
 	struct rb_node br_node;

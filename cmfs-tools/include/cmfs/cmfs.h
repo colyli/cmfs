@@ -32,7 +32,6 @@
 #include <stdint.h>
 #include <cmfs-kernel/cmfs_fs.h>
 #include <cmfs/cmfs.h>
-#include <cmfs/bitmap.h>
 
 
 typedef struct _cmfs_filesys cmfs_filesys;
@@ -75,13 +74,12 @@ struct _cmfs_cached_inode {
 	cmfs_bitmap *ci_chains;
 };
 
-
-
 struct cmfs_cluster_group_sizes {
 	uint16_t cgs_cpg;
 	uint16_t cgs_tail_group_bits;
 	uint32_t cgs_cluster_groups;
 };
+
 static inline void cmfs_calc_cluster_groups(
 					uint64_t clusters,
 					uint64_t blocksize,
