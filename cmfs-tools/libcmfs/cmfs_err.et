@@ -30,4 +30,25 @@ ec	CMFS_ET_IO,
 ec	CMFS_ET_CANNOT_DETERMINE_SECTOR_SIZE,
 	"Unalbe to determine the sector size"
 
+ec	CMFS_ET_NO_MEMORY,
+	"Memory allocation failed"
+
+ec	CMFS_ET_SHORT_READ,
+	"Attempt to read block from filesystem resulted in short read"
+
+ec	CMFS_ET_SHORT_WRITE,
+	"Attempt to write block to the filesystem resulted in short write"
+
+ec	CMFS_ET_INVALID_ARGUMENT,
+	"Invalid argument passed to CMFS library"
+
+ec	CMFS_ET_INTERNAL_FAILURE,
+	"Internal logic failure"
+
+ec	CMFS_ET_UNEXPECTED_BLOCK_SIZE,
+	"Filesystem has unexpected block size"
+
+ec	CMFS_ET_BAD_DEVICE_NAME,
+	"Illegal or malformed device name"
+
 	end
