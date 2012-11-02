@@ -20,7 +20,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <linux/fs.h>
 
+#include "cmfs_err.h"
 
 errcode_t ocfs2_get_device_sectsize(const char *file, int *sectsize)
 {
@@ -35,7 +37,7 @@ errcode_t ocfs2_get_device_sectsize(const char *file, int *sectsize)
 			return CMFS_ET_IO;
 	}
 
-	ret = CMFS_ET_CANNOT_DETERMIN_SECTOR_SIZE;
+	ret = CMFS_ET_CANNOT_DETERMINE_SECTOR_SIZE;
 	if (ioctl(fd, BLKSSZGET, sectsize) >= 0)
 		ret = 0;
 
