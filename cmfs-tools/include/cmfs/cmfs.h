@@ -34,6 +34,13 @@
 #include <cmfs/cmfs.h>
 
 
+/* falgs for cmfs_filesys structure */
+#define CMFS_FLAG_RO			0x00
+#define CMFS_FLAG_RW			0x01
+#define CMFS_FLAG_DIRTY			0x04
+#define CMFS_FLAG_BUFFERED			0x10
+
+
 typedef struct _cmfs_filesys cmfs_filesys;
 typedef struct _io_channel io_channel;
 typedef struct _cmfs_cached_inode cmfs_cached_inode;
@@ -80,6 +87,7 @@ struct cmfs_cluster_group_sizes {
 	uint32_t cgs_cluster_groups;
 };
 
+
 static inline void cmfs_calc_cluster_groups(
 					uint64_t clusters,
 					uint64_t blocksize,
@@ -103,5 +111,20 @@ struct io_vec_unit {
 	char *ivu_buf;
 	uint32_t ivu_buflen;
 };
+
+struct cmfs_io_stats {
+	uint64_t is_bytes_read;
+	uint64_t is_bytes_written;
+	uint32_t is_cache_hits;
+	uint32_t is_cache_misses;
+	uint32_t is_cache_inserts;
+	uint32_t is_cache_removes;
+};
+
+void io_get_stats(io_channel *channel, struct cmfs_io_stats *stats);
+
+
+errcode_t io_set_blksize(io_channel *channel, int blksize);
+
 
 #endif
