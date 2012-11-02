@@ -14,6 +14,21 @@
  * Modified for CMFS by Coly Li <i@coly.li>
  */
 
+/* for off64_t and lseek64() */
+#define _LARGEFILE64_SOURCE
+
+#include <stdint.h>
+#include <linux/fs.h>
+#include <sys/utsname.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <et/com_err.h>
+
 static int valid_offset(int fd, off64_t offset)
 {
 	char ch;
@@ -41,7 +56,7 @@ errcode_t cmfs_get_device_size(const char *file, int blocksize,
 	/* for linux < 2.6, BLKGETSIZE64 is not valid */
 	if ((uname(&ut) == 0) &&
 	    ((ut.release[0] == '2') && (ut.release[1] == '.') &&
-	    (ut.release[2] == < '6') && (ut.release[3] == '.')))
+	    (ut.release[2] == '6') && (ut.release[3] == '.')))
 		valid_blkgetsize64 = 0;
 
 	if (valid_blkgetsize64 &&
@@ -56,7 +71,7 @@ errcode_t cmfs_get_device_size(const char *file, int blocksize,
 		goto out;
 	}
 
-#WARN "size should be 32 bits ?"
+/* XXX: size should be 32 bits ? */
 	if (ioctl(fd, BLKGETSIZE, &size) >= 0) {
 		*retblocks = size / (blocksize / 512);
 		goto out;
