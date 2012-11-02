@@ -98,4 +98,10 @@ static inline void cmfs_calc_cluster_groups(
 		cgs->cgs_tail_group_bits = cgs->cgs_cpg;
 }
 
+struct io_vec_unit {
+	uint64_t ivu_blkno;
+	char *ivu_buf;
+	uint32_t ivu_buflen;
+};
+
 #endif
