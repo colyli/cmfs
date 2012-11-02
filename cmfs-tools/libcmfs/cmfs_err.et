@@ -21,4 +21,13 @@
 
 error_table cmfs
 
+ec	CMFS_ET_NAMED_DEVICE_NOT_FOUND,
+	"Device name specified was not found"
 
+ec	CMFS_ET_IO,
+	"I/O error on channel"
+
+ec	CMFS_ET_CANNOT_DETERMINE_SECTOR_SIZE,
+	"Unalbe to determine the sector size"
+
+	end
