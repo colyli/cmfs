@@ -23,12 +23,18 @@
  *
  */
 
-#define _LARGEFILE64_SOURCE
+#include <cmfs/cmfs.h>
+#include <unistd.h>
+#include <sys/types.h>
+
 
 typedef struct _State State;
+typedef struct _AllocGroup AllocGroup;
+typedef struct _SystemFileDiskRecord SystemFileDiskRecord;
+typedef struct _DirData DirData;
 
 struct _State {
-	char *program;
+	char *progname;
 
 	int verbose;
 	int quiet;
@@ -71,4 +77,46 @@ struct _State {
 	uint64_t first_cluster_group_blkno;
 
 	cmfs_fs_options feature_flags;
+};
+
+struct _AllocGroup {
+	char *name;
+	struct cmfs_group_desc *gd;
+	SystemFileDiskRecord *alloc_inode;
+	uint32_t chain_free;
+	uint32_t chain_total;
+	struct _AllocGroup *next;
+};
+
+struct BitInfo {
+	uint32_t used_bits;
+	uint32_t total_bits;
+};
+
+struct _SystemFileDiskRecord {
+	uint64_t fe_off;
+	uint16_t suballoc_bit;
+	uint64_t extent_off;
+	uint64_t extent_len;
+	uint64_t file_size;
+
+	uint64_t chain_off;
+	AllocGroup *group;
+
+	struct BitInfo bi;
+	struct _AllocBitmap *bitmap;
+
+	int flags;
+	int links;
+	int mode;
+
+	/* record the dir entry so that inline dir can be sotred with file */
+	DirData *dir_data;
+};
+
+struct _DirData {
+	void *buf;
+	int last_off;
+
+	SystemFileDiskRecord *record;
 };
