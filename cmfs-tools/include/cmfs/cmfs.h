@@ -30,6 +30,7 @@
 #define _FILESYS_H
 
 #include <stdint.h>
+#include <et/com_err.h>
 #include <cmfs-kernel/cmfs_fs.h>
 #include <cmfs/cmfs.h>
 
@@ -46,6 +47,8 @@ typedef struct _io_channel io_channel;
 typedef struct _cmfs_cached_inode cmfs_cached_inode;
 typedef struct _cmfs_dinode cmfs_dinode;
 typedef struct _cmfs_bitmap cmfs_bitmap;
+typedef struct _cmfs_fs_options cmfs_fs_options;
+
 
 struct _cmfs_filesys {
 	char *fs_devname;
@@ -81,12 +84,17 @@ struct _cmfs_cached_inode {
 	cmfs_bitmap *ci_chains;
 };
 
+struct _cmfs_fs_options {
+	uint32_t opt_compat;
+	uint32_t opt_incompat;
+	uint32_t opt_ro_compat;
+};
+
 struct cmfs_cluster_group_sizes {
 	uint16_t cgs_cpg;
 	uint16_t cgs_tail_group_bits;
 	uint32_t cgs_cluster_groups;
 };
-
 
 static inline void cmfs_calc_cluster_groups(
 					uint64_t clusters,
