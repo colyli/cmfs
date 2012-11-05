@@ -28,14 +28,254 @@
 #ifndef _CMFS_FS_H
 #define _CMFS_FS_H
 
+#include <linux/types.h>
 
-#define CMFS_VOL_UUID_LEN		16
-//#define CMFS_MAX_VOL_LABEL_LEN	64
+#define CMFS_MAX_VOL_SIGNATURE_LEN	128
+#define CMFS_MAX_MOUNT_POINT_LEN	128
+#define CMFS_MAX_VOL_LABEL_LEN		 64
+#define CMFS_MAX_VOL_ID_LENGTH		 16
+#define CMFS_VOL_UUID_LEN		 16
 
 
 #define CMFS_MIN_CLUSTERSIZE	4096
 #define CMFS_MAX_CLUSTERSIZE	(32*(1<<20))
 #define CMFS_MAX_BLOCKSIZE	CMFS_MIN_CLUSTERSIZE
 #define CMFS_MIN_BLOCKSIZE	CMFS_MAX_BLOCKSIZE
+
+#define CMFS_SUPER_BLOCK_SIGNATURE	"CMFSV1"
+/*
+ * CMFS volume header, lives at sector 0.
+ */
+struct cmfs_vol_disk_hdr {
+	uint8_t signature[CMFS_MAX_VOL_SIGNATURE_LEN];
+	uint8_t mount_point[CMFS_MAX_MOUNT_POINT_LEN];
+};
+
+/*
+ * CMFS volume label, lives at sector 1.
+ */
+struct cmfs_vol_label {
+	uint8_t label[CMFS_MAX_VOL_LABEL_LEN];
+	uint16_t label_len;
+	uint8_t vol_id[CMFS_MAX_VOL_ID_LENGTH];
+	uint16_t vol_id_len;
+};
+
+/*
+ * Block checking structure. This is used in metadata to validate the
+ * contents. If CMFS_FEATURE_INCOMPAT_META_ECC is not set, it is all
+ * zeros.
+ */
+struct cmfs_block_check {
+/*00*/	__le32 bc_crc32e;
+	__le16 bc_ecc;
+	__le16 bc_reserved1;
+/*08*/
+};
+
+/*
+ * On disk extent record for CMFS
+ * It describes a range of blocks on disk.
+ *
+ * Length fields are devided into interior and leaf node version.
+ * This leaves room for a flags field (CMFS_EXT_*) in the leaf nodes.
+ */
+struct cmfs_extent_rec {
+/*00*/	__le64 e_cpos;		/* Offset into the file, in clusters */
+/*08*/	__le64 e_blkno;		/* Physical disk offset, in blocks */
+/*10*/	union {
+		__le64 e_int_clusters;	/* Clusters covered by all children */
+//		__le64 e_int_blocks;	/* blocks covered by all children */
+		struct {
+			__le32 e_leaf_blocks;	/* blocks covered by this extent
+		       				   for 4KB block, the max length
+						   of single extent is 16TB */
+			uint8_t e_reserved1[3];
+			uint8_t e_flags;	/* extent flags */
+		};
+	};
+/*20*/
+};
+
+/*
+ * On disk extent list for CMFS (node in teh tree). Note that this
+ * is contained inside cmfs_dinode or cmfs_extent_block, so the
+ * offsets are relative to cmfs_dinode.id2.i_list or
+ * cmfs_extent_block.h_list, respectively.
+ */
+struct cmfs_extent_list {
+/*00*/	__le16 l_tree_depth;	/* Extent tree depth from this point.
+				   0 means data extents hang directly
+				   off this header (a leaf)
+				   NOTE: the high 8 bits cannot be
+				   used - tree_depth is never that big.
+				 */
+	__le16 l_count;		/* Number of extent records */
+	__le16 l_next_free_rec;	/* Next unused extent slot */
+	__le16 l_reserved1;
+/*10*/	__le64 l_reserved2[2];	/* Pad to sizeof(cmfs_extent_record) */
+/*20*/	struct cmfs_extent_rec l_recs[0];	/* Extent records */
+};
+
+/*
+ * On disk chain record format within chain list for CMFS.
+ */
+struct cmfs_chain_rec {
+/*00*/	__le32 c_free;	/* Number of free bits in this chain */
+	__le32 c_total;	/* Number of total bits in this chain */
+	__le64 c_blkno;	/* Physical disk offset (blocks) of 1st group */
+/*10*/
+};
+
+/*
+ * On disk allocation chain list for CMFS. Note that this is
+ * contained inside cmfs_inode, so the offsets are relative to
+ * cmfs_dinode.id2.i_chain.
+ */
+struct cmfs_chain_list {
+/*00*/	__le16 cl_cpg;			/* Clusters per Block Group */
+	__le16 cl_bpc;			/* Bits per Cluster */
+	__le16 cl_count;		/* Total chains in this list */
+	__le16 cl_next_free_rec;	/* Next unused chain slot */
+	__le64 cl_reserved1;
+/*10*/	struct cmfs_chain_rec cl_recs[0];	/* Chain records */
+};
+
+/*
+ * Local allocation bitmap for CMFS per-cpu slots
+ * Note that it exists inside cmfs_dinode, so all offsets
+ * are relative to the start of cmfs_dinode.id2.
+ */
+struct cmfs_local_alloc {
+/*00*/	__le32 la_bm_off;	/* Starting bit offset in main bitmap */
+	__le16 la_size;		/* Size of included bitmap, in bytes */
+	__le16 la_reserved1[5];
+/*10*/	uint8_t	la_bitmap[0];
+};
+
+/*
+ * On disk truncate record format for truncate log
+ */
+struct cmfs_truncate_rec {
+	__le32 t_start;		/* 1st cluster in this log */
+	__le32 t_clusters;	/* Number of total clusters convered */
+};
+
+/*
+ * On disk deallocation log for CMFS. Note that this is
+ * contained inside cmfs_dinode, so the offsets are
+ * relative to cmfs_dinode.id2.i_dealloc.
+ */
+struct cmfs_truncate_log {
+/*00*/	__le16 tl_count;			/* Total records in this log*/
+	__le16 tl_used;				/* Number of records in use*/
+	__le16 tl_reserved1[6];
+/*10*/	struct cmfs_truncate_rec tl_recs[0];	/* Truncate records */
+};
+
+/*
+ * Data-in-inode header. This is only used for i_dyn_features
+ * has CMFS_INLINE_DATA_FL set
+ */
+struct cmfs_inline_data {
+/*00*/	__le16 id_count;	/* Number of bytes can be used for data,
+				   starting at id_data */
+	__le16 id_reserved1[3];
+/*08*/	uint8_t id_data[0];	/* Start of user data */
+};
+
+/*
+ * On disk superblock for CMFS
+ * Note that it is contained inside cmfs_dinode, so all offsets
+ * are relative to the start of cmfs_dinode.id2.
+ */
+struct cmfs_super_block {
+/*00*/	__le16 s_major_rev_level;
+	__le16 s_minor_rev_level;
+	__le16 s_mnt_count;
+	__le16 s_max_mnt_count;
+	__le16 s_state;
+	__le16 s_errors;
+	__le32 s_checkinterval;
+/*10*/	__le64 s_lastcheck;
+	__le32 s_creator_os;
+	__le32 s_feature_compat;
+/*20*/	__le32 s_feature_incompat;
+	__le32 s_feature_ro_compat;
+	__le64 s_root_blkno;
+/*30*/	__le64 s_system_dir_blkno;
+	__le32 s_blocksize_bits;
+	__le32 s_clustersize_bits;
+/*40*/	__le16 s_tunefs_flag;
+	uint8_t s_label[CMFS_MAX_VOL_LABEL_LEN];
+	uint8_t s_uuid[CMFS_VOL_UUID_LEN];
+	__le32 s_uuid_hash;
+	__le64 s_first_cluster_group;
+/*50*/	__le16 s_xattr_inline_size;
+	__le16 s_reserved1[7];
+/*60*/
+//	__le16 s_max_slots; /* XXX: use this for concurrently inode allocation */
+/* XXXX: should pad all rest space of dinode which contains the super block to zero */
+};
+
+
+/*
+ * On disk CMFS inode format
+ */
+struct cmfs_dinode {
+/*00*/	uint8_t i_signature[8];		/* Signature for validation */
+	__le32 i_generation;		/* Generation number */
+	__le32 i_links_count;		/* Links count */
+/*10*/	__le32 i_uid;			/* Owner UID */
+	__le32 i_gid;			/* Owner GID */
+	__le64 i_size;
+/*20*/	__le64 i_atime;
+	__le64 i_ctime;
+/*30*/	__le64 i_mtime;
+	__le64 i_dtime;
+/*40*/	__le32 i_flags;
+	__le16 i_mode;
+	__le16 i_suballoc_slot;		/* Slot suballocator this inode
+					   belongs to */
+	__le64 i_blkno;
+/*50*/	__le32 i_clusters;		/* Cluster count */
+	__le32 i_fs_generation;
+	__le64 i_last_eb_blk;
+/*60*/	__le32 i_atime_nsec;
+	__le32 i_ctime_nsec;
+	__le32 i_mtime_nsec;
+	__le32 i_attr;
+/*70*/	__le64 i_xattr_loc;
+	__le64 i_refcount_loc;
+/*80*/	__le64 i_suballoc_loc;
+/*88*/ struct cmfs_block_check i_check;
+/*A0*/	__le16 i_dyn_features;
+	__le16 i_xattr_inline_size;
+	__le32 i_reserved1[1];
+/*A8*/	union {
+		__le64 i_pad1;
+		struct {
+			__le64 i_rdev;
+		} dev1;
+		struct {
+			__le32 i_used;
+			__le32 i_total;
+		} bitmap1;
+		struct {
+			__le32 ij_flags;
+			__le32 ij_recovery_generation;
+		} journal1;
+	} id1;
+/*B0*/ union {
+		struct cmfs_super_block		i_super;
+		struct cmfs_local_alloc		i_lab;
+		struct cmfs_chain_list		i_chain;
+		struct cmfs_extent_list		i_list;
+		struct cmfs_truncate_log	i_dealloc;
+		struct cmfs_inline_data		i_data;
+		uint8_t				i_symlink[0];
+	} id2;
+/* Actual on-disk size is one block (4KB) */
+};
 
 #endif
