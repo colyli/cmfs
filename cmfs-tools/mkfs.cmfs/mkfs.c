@@ -18,6 +18,21 @@
  *
  */
 
+#define _GNU_SOURCE
+
+#include <stdio.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <getopt.h>
+
+#include <cmfs/cmfs.h>
+#include <cmfs-kernel/cmfs_fs.h>
 #include "mkfs.h"
 
 
@@ -30,7 +45,7 @@ static void open_device(State *s)
 	s->fd = open64(s->device_name, O_RDWR | O_DIRECT);
 	if (s->fd == -1) {
 		com_err(s->progname, 0,
-			"Could not open device %s: %s"，
+			"Could not open device %s: %s",
 			s->device_name, strerror(errno));
 		exit(1);
 	}
@@ -53,7 +68,7 @@ static void * do_malloc(State *s, size_t size)
 	if (ret < 0) {
 		com_err(s->progname, 0,
 			"Could not allocate %lu bytes of memory",
-			(usigned long)size);
+			(unsigned long)size);
 		exit(1);
 	}
 	return buf;
@@ -63,7 +78,7 @@ static void format_leading_space(State *s)
 {
 	int num_blocks, size;
 	struct cmfs_vol_disk_hdr *hdr;
-	struct cmfs_vol_lable *lbl;
+	struct cmfs_vol_label *lbl;
 	void *buf;
 	char *p;
 
@@ -72,16 +87,16 @@ static void format_leading_space(State *s)
 	p = buf = do_malloc(s, size);
 	memset(buf, 0, size);
 
-	hdr = buf;
+	hdr = (struct cmfs_vol_disk_hdr *)buf;
 	strcpy((char *)hdr->signature, "this is a cmfs volume");
 	strcpy((char *)hdr->mount_point, "this is a cmfs volume");
 
-	P += 512;
+	p += 512;
 	lbl = (struct cmfs_vol_label *)p;
 	strcpy((char *)lbl->label, "this is a cmfs volume");
 
 	do_pwrite(s, buf, size, 0);
-	free(buff);
+	free(buf);
 }
 
 static void
@@ -94,7 +109,7 @@ format_superblock(State *s, SystemFileDiskRecord *rec,
 	di = do_malloc(s, s->blocksize);
 	memset(di, 0, s->blocksize);
 
-	strcpy((char *)di->i_signature, CMFS1_SUPER_BLOCK_SIGNATURE);
+	strcpy((char *)di->i_signature, CMFS_SUPER_BLOCK_SIGNATURE);
 	di->i_generation = s->vol_generation;
 	di->i_fs_generation = s->vol_generation;
 
@@ -131,7 +146,7 @@ format_superblock(State *s, SystemFileDiskRecord *rec,
 	di->id2.i_super.s_feature_ro_compat = s->feature_flags.opt_ro_compat;
 
 	strcpy((char *)di->id2.i_super.s_label, s->vol_label);
-	memcpy(di->id2.i_super.s_uuid, s->uuid, CMFS1_VOL_UUID_LEN);
+	memcpy(di->id2.i_super.s_uuid, s->uuid, CMFS_VOL_UUID_LEN);
 
 	mkfs_swap_inode_from_cpu(s, di);
 	mkfs_compute_meta_ecc(s, di, &di->i_check);
@@ -234,7 +249,7 @@ parse_journal_opts(char *progname, const char *opts,
 	options = strdup(opts);
 
 	for (token = options; token && *token; token = next) {
-		p = strchr(,',');
+		p = strchr(token,',');
 		next = NULL;
 		invert = 0;
 
@@ -309,16 +324,16 @@ get_state(int argc, char **argv)
 	cmfs_fs_options feature_flags = {0, 0, 0};
 	cmfs_fs_options reverse_flags = {0, 0, 0};
 
-	static sruct option long_options[] = {
+	static struct option long_options[] = {
 		{"cluster-size",	1, 0, 'C'},
 		{"lable",		1, 0, 'L'},
 		{"verbose",		0, 0, 'v'},
 		{"quiet",		0, 0, 'q'},
 		{"version",		0, 0, 'V'},
 		{"journal-options",	0, 0, 'J'},
-		{"force",		0, 0, 'F''},
+		{"force",		0, 0, 'F'},
 		{"dry-run",		0, 0, 'n'},
-		{"no-backup-super",	0, 0, BACKUP_SUPER_OPTION'},
+		{"no-backup-super",	0, 0, BACKUP_SUPER_OPTION},
 		{"fs-features=",	1, 0, FEATURES_OPTION},
 		{0, 0, 0, 0}
 	};
