@@ -130,8 +130,10 @@ struct cmfs_io_stats {
 };
 
 void io_get_stats(io_channel *channel, struct cmfs_io_stats *stats);
-
-
+struct cmfs_dir_block_trailer *cmfs_dir_trailer_from_block(cmfs_filesys *fs,
+							   void  *data);
+errcode_t cmfs_swap_dir_entries_from_cpu(void *buf, uint64_t bytes);
+errcode_t cmfs_swap_dir_entries_to_cpu(void *buf, uint64_t bytes);
 errcode_t io_set_blksize(io_channel *channel, int blksize);
 
 
