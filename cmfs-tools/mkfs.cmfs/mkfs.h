@@ -27,11 +27,72 @@
 #include <unistd.h>
 #include <sys/types.h>
 
+#define CMFS_DFL_MAX_MNT_COUNT		48
+#define CMFS_DFL_CHECKINTERVAL		0
+
+#define CMFS_OS_LINUX			0
+#define CMFS_OS_HURD			1
+#define CMFS_OS_FREEBSD			2
+#define CMFS_OS_MINIX			3
+#define CMFS_OS_MLXOS			4
+
+
+
+
+
+/*
+ * backup superblock flag is used to indicate that this volume
+ * has backup superblocks
+ */
+#define CMFS_FEATURE_COMPAT_BACKUP_SB		0x0001
+
+
+
+
+/* Journal limits (in bytes) */
+#define CMFS_MIN_JOURNAL_SIZE	(4 * (1<<20))
+
+#define SYSTEM_FILE_NAME_MAX	40
+enum {
+	SFI_JOURNAL,
+	SFI_CLUSTER,
+	SFI_LOCAL_ALLOC,
+	SFI_CHAIN,
+	SFI_TRUNCATE_LOG,
+	SFI_OTHER
+};
+
+typedef struct _SystemFileInfo SystemFileInfo;
+
+struct _SystemFileInfo {
+	char *name;
+	int type;
+	int global;
+	int mode;
+};
 
 typedef struct _State State;
 typedef struct _AllocGroup AllocGroup;
 typedef struct _SystemFileDiskRecord SystemFileDiskRecord;
 typedef struct _DirData DirData;
+typedef struct _AllocBitmap AllocBitmap;
+
+
+struct _AllocBitmap {
+	AllocGroup **groups;
+
+	uint32_t valid_bits;
+	uint32_t unit;
+	uint32_t unit_bits;
+
+	char *name;
+
+	uint64_t fe_disk_off;
+
+	SystemFileDiskRecord *bm_record;
+	SystemFileDiskRecord *alloc_record;
+	int num_chains;
+};
 
 struct _State {
 	char *progname;
@@ -42,6 +103,9 @@ struct _State {
 	int prompt;
 	int mount;
 	int no_backup_super;
+	int inline_data;
+	int dx_dirs;
+	int dry_run;
 
 	uint32_t blocksize;
 	uint32_t blocksize_bits;
@@ -71,7 +135,11 @@ struct _State {
 
 	time_t format_time;
 
+	AllocBitmap *global_bm;
+	AllocGroup *system_group;
+
 	uint32_t nr_cluster_groups;
+	uint16_t global_cpg;
 	uint16_t tail_group_bits;
 	uint32_t first_cluster_group;
 	uint64_t first_cluster_group_blkno;
