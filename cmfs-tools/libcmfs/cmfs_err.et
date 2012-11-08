@@ -51,4 +51,7 @@ ec	CMFS_ET_UNEXPECTED_BLOCK_SIZE,
 ec	CMFS_ET_BAD_DEVICE_NAME,
 	"Illegal or malformed device name"
 
+ec	CMFS_ET_DIR_CORRUPTED,
+	"CMFS directory corrupted"
+
 	end
