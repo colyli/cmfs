@@ -2,6 +2,8 @@
 #include <cmfs/cmfs.h>
 #include <cmfs/byteorder.h>
 
+#include "cmfs_err.h"
+
 struct cmfs_dir_block_trailer *
 cmfs_dir_trailer_from_block(cmfs_filesys *fs, void  *data)
 {
