@@ -34,6 +34,8 @@
 #define CMFS_MAJOR_REV_LEVEL		0
 #define CMFS_MINOR_REV_LEVEL		1
 
+/* XXX: currently hard code to 2 */
+#define CMFS_PER_CPU_NUM		2
 /*
  * A CMFS volume starts this way:
  * Sector 0: Valid cmfs_vol_disk_hdr
@@ -59,10 +61,11 @@
  * Min cluster size: 4KB
  * Max cluster size: 32MB
  */
-#define CMFS_MIN_CLUSTERSIZE	4096
-#define CMFS_MAX_CLUSTERSIZE	(32*(1<<20))
-#define CMFS_MAX_BLOCKSIZE	CMFS_MIN_CLUSTERSIZE
-#define CMFS_MIN_BLOCKSIZE	CMFS_MAX_BLOCKSIZE
+#define CMFS_MIN_CLUSTERSIZE		4096
+#define CMFS_MAX_CLUSTERSIZE		(32*(1<<20))
+#define CMFS_DEFAULT_CLUSTERSIZE	(1<<20)
+#define CMFS_MAX_BLOCKSIZE		CMFS_MIN_CLUSTERSIZE
+#define CMFS_MIN_BLOCKSIZE		CMFS_MAX_BLOCKSIZE
 
 #define CMFS_SUPER_BLOCK_SIGNATURE	"CMFSV1"
 
@@ -97,7 +100,35 @@
 #define CMFS_INDEXED_DIR_FL	(0x0008)
 #define CMFS_HAS_REFCOUNT_FL	(0x0010)
 
+/*
+ * CMFS directory file types. Only the low 3 bits are used.
+ * The other bits are reserved now
+ */
+#define CMFS_FT_UNKNOWN		0
+#define CMFS_FT_REG_FILE	1
+#define CMFS_FT_DIR		2
+#define CMFS_FT_CHRDEV		3
+#define CMFS_FT_BLKDEV		4
+#define CMFS_FT_FIFO		5
+#define CMFS_FT_SOCK		6
+#define CMFS_FT_SYMLINK		7
 
+#define CMFS_FT_MAX		8
+
+
+/* System file index */
+enum {
+	BAD_BLOCK_SYSTEM_INODE = 0,
+	GLOBAL_INODE_ALLOC_SYSTEM_INODE,
+	GLOBAL_BITMAP_SYSTEM_INODE,
+	ORPHAN_DIR_SYSTEM_INODE,
+	EXTENT_ALLOC_SYSTEM_INODE,
+	INODE_ALLOC_SYSTEM_INODE,
+	JOURNAL_SYSTEM_INODE,
+	LOCAL_ALLOC_SYSTEM_INODE,
+	TRUNCATE_LOG_SYSTEM_INODE,
+	NUM_SYSTEM_INODES
+};
 
 /*
  * CMFS volume header, lives at sector 0.
