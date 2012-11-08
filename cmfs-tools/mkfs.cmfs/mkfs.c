@@ -30,14 +30,30 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
+#include <limits.h>
+#include <et/com_err.h>
+#include <inttypes.h>
+#include <signal.h>
 
 #include <cmfs/cmfs.h>
 #include <cmfs-kernel/cmfs_fs.h>
 #include "mkfs.h"
+#include "../libcmfs/cmfs_err.h"
 
 
 
 
+static SystemFileInfo system_files[] = {
+	{"bad_blocks", SFI_OTHER, 1, S_IFREG | 0644},
+	{"global_inode_alloc", SFI_CHAIN, 1, S_IFREG | 0644},
+	{"global_bitmap", SFI_CLUSTER, 1, S_IFREG | 0644},
+	{"orphan_dir", SFI_OTHER, 1, S_IFDIR | 0755},
+	{"extent_alloc", SFI_CHAIN, 1, S_IFREG | 0644},
+	{"inode_alloc", SFI_CHAIN, 1, S_IFREG | 0644},
+	{"journal", SFI_JOURNAL, 1, S_IFREG | 0644},
+	{"local_allc", SFI_LOCAL_ALLOC, 1, S_IFREG | 0644},
+	{"truncate_log", SFI_TRUNCATE_LOG, 1, S_IFREG | 0644},
+};
 
 
 static void open_device(State *s)
@@ -117,19 +133,19 @@ format_superblock(State *s, SystemFileDiskRecord *rec,
 	di->i_ctime = s->format_time;
 	di->i_mtime = s->format_time;
 	di->i_blkno = super_off >> s->blocksize_bits;
-	di->i_flags = CMFS1_VALID_FL | CMFS1_SYSTEM_FL | CMFS1_SUPER_BLOCK_FL;
+	di->i_flags = CMFS_VALID_FL | CMFS_SYSTEM_FL | CMFS_SUPER_BLOCK_FL;
 	di->i_clusters = s->volume_size_in_clusters;
-	di->id2.i_super.s_major_rev_level = CMFS1_MAJOR_REV_LEVEL;
-	di->id2.i_super.s_minor_rev_level = CMFS1_MINOR_REV_LEVEL;
+	di->id2.i_super.s_major_rev_level = CMFS_MAJOR_REV_LEVEL;
+	di->id2.i_super.s_minor_rev_level = CMFS_MINOR_REV_LEVEL;
 	di->id2.i_super.s_root_blkno = root_rec->fe_off >> s->blocksize_bits;
 	di->id2.i_super.s_system_dir_blkno = sys_rec->fe_off >> s->blocksize_bits;
 	di->id2.i_super.s_mnt_count = 0;
-	di->id2.i_super.s_max_mnt_count = CMFS1_DFL_MAX_MNT_COUNT;
+	di->id2.i_super.s_max_mnt_count = CMFS_DFL_MAX_MNT_COUNT;
 	di->id2.i_super.s_state = 0;
 	di->id2.i_super.s_errors = 0;
 	di->id2.i_super.s_lastcheck = s->format_time;
-	di->id2.i_super.s_checkinterval = CMFS1_DFL_CHECKINTERVAL;
-	di->id2.i_super.s_creator_os = CMFS1_OS_LINUX;
+	di->id2.i_super.s_checkinterval = CMFS_DFL_CHECKINTERVAL;
+	di->id2.i_super.s_creator_os = CMFS_OS_LINUX;
 	di->id2.i_super.s_blocksize_bits = s->blocksize_bits;
 	di->id2.i_super.s_clustersize_bits = s->cluster_size_bits;
 
@@ -139,7 +155,7 @@ format_superblock(State *s, SystemFileDiskRecord *rec,
 	 * "s->no_backup_super" according to the features in get_state(),
 	 * so it's safe to clear the flag here.
 	 */
-	s->feature_flags.opt_compat &= ~CMFS1_FEATURE_COMPAT_BACKUP_SB;
+	s->feature_flags.opt_compat &= ~CMFS_FEATURE_COMPAT_BACKUP_SB;
 
 	di->id2.i_super.s_feature_incompat = s->feature_flags.opt_incompat;
 	di->id2.i_super.s_feature_compat = s->feature_flags.opt_compat;
@@ -239,7 +255,7 @@ write_directory_data(State *s, DirData *dir)
 
 static void
 parse_journal_opts(char *progname, const char *opts,
-		   uint64_t *journal_size_in_bytes, int *journal64)
+		   uint64_t *journal_size_in_bytes)
 {
 	char *options, *token, *next, *p, *arg;
 	int ret, journal_usage = 0;
@@ -255,7 +271,7 @@ parse_journal_opts(char *progname, const char *opts,
 
 		if (p) {
 			*p = '\0';
-			next = *p + 1;
+			next = p + 1;
 		}
 
 		arg = strstr(token, "no");
@@ -302,6 +318,13 @@ parse_journal_opts(char *progname, const char *opts,
 	free(options);
 }
 
+
+/* non-alpha-code dummy */
+enum {
+	BACKUP_SUPER_OPTION = CHAR_MAX + 1,
+	FEATURES_OPTION,
+};
+
 static State *
 get_state(int argc, char **argv)
 {
@@ -326,7 +349,7 @@ get_state(int argc, char **argv)
 
 	static struct option long_options[] = {
 		{"cluster-size",	1, 0, 'C'},
-		{"lable",		1, 0, 'L'},
+		{"label",		1, 0, 'L'},
 		{"verbose",		0, 0, 'v'},
 		{"quiet",		0, 0, 'q'},
 		{"version",		0, 0, 'V'},
@@ -374,8 +397,8 @@ get_state(int argc, char **argv)
 						CMFS_MAX_CLUSTERSIZE);
 			break;
 		case 'L':
-			vol_lable = strdup(optarg);
-			if (strlen(vol_lable) >= CMFS_MAX_VOL_LABEL_LEN) {
+			vol_label = strdup(optarg);
+			if (strlen(vol_label) >= CMFS_MAX_VOL_LABEL_LEN) {
 				com_err(progname, 0,
 					"Volume label too long: must be less "
 					"then %d characters",
@@ -408,7 +431,7 @@ get_state(int argc, char **argv)
 		}
 	}
 	/* no device name (or optional fs size) */
-	if ((optid = argc) && !show_version)
+	if ((optind = argc) && !show_version)
 		usage(progname);
 
 
@@ -448,9 +471,9 @@ get_state(int argc, char **argv)
 	s->quiet		= quiet;
 	s->force		= force;
 	s->dry_run		= dry_run;
-	s->blocksize		= CMFS_DEFAULT_BLOCK_SIZE_IN_BYTES;
+	s->blocksize		= CMFS_MAX_BLOCKSIZE;
 	s->cluster_size		= cluster_size;
-	s->vol_label		= vol_lable;
+	s->vol_label		= vol_label;
 	s->device_name		= strdup(device_name);
 	s->fd			= -1;
 	s->format_time		= time(NULL);
@@ -458,15 +481,15 @@ get_state(int argc, char **argv)
 
 
 	if (!uuid) {
-		sprintf(stderr, "%s:%d no uuid specified, generate uuid.\n",
+		fprintf(stderr, "%s:%d no uuid specified, generate uuid.\n",
 			__func__, __LINE__);
 		uuid_generate(s->uuid);
 	} else {
 		if (strlen(uuid) == 32) {
 			translate_uuid(uuid, uuid_36);
-			uuid_p = uuid_36
+			uuid_p = uuid_36;
 		} else {
-			uuid_p = uuid
+			uuid_p = uuid;
 		}
 
 		/* uuid_parse only supports 36 bytes uuid */
@@ -474,7 +497,7 @@ get_state(int argc, char **argv)
 			com_err(s->progname, 0, "Invalid UUID specified");
 			exit(1);
 		}
-		printf("\WARNING!!! CMFS uses the UUID to uniquely identify "
+		printf("\nWARNING!!! CMFS uses the UUID to uniquely identify "
 		       "a file system.\nPlease choose the UUID with care\n\n");
 		free(uuid);
 	}
@@ -498,7 +521,7 @@ static uint64_t align_bytes_to_clusters_ceil(State *s,
 	}
 
 	ret = ret >> s->cluster_size_bits;
-	ret = ret << s->cluster_size_bites;
+	ret = ret << s->cluster_size_bits;
 
 	return ret;
 }
@@ -552,11 +575,11 @@ fill_defaults(State *s)
 	uint32_t blocksize;
 	int sectsize;
 	uint64_t ret;
-	struct cmfs_cluster_group_size cgs;
+	struct cmfs_cluster_group_sizes cgs;
 	uint64_t tmp;
 
 	pagesize = getpagesize();
-	s->pagesize_bites = get_bits(s, pagesize);
+	s->pagesize_bits = get_bits(s, pagesize);
 
 	err = cmfs_get_device_sectsize(s->device_name, &sectsize);
 	if (err) {
@@ -622,23 +645,23 @@ fill_defaults(State *s)
 	s->blocksize_bits = get_bits(s, s->blocksize);
 
 	if (!s->cluster_size)
-		s->cluster_size = CMFS_DEFAULT_CLUSTER_SIZE;
+		s->cluster_size = CMFS_DEFAULT_CLUSTERSIZE;
 	s->cluster_size_bits = get_bits(s, s->cluster_size);
 
 	/* volume size should be cluster size aligned */
-	s->volume_size_in_cluster =
-		(s->volume_size_in_bytes >> s->cluster_size_bites);
+	s->volume_size_in_clusters =
+		(s->volume_size_in_bytes >> s->cluster_size_bits);
 	s->volume_size_in_bytes =
-		((uint64_t)s->volume_size_in_cluster << s->cluster_size_bites);
+		((uint64_t)s->volume_size_in_clusters << s->cluster_size_bits);
 	s->volume_size_in_blocks =
-		s->volume_size_in_bytes >> s->blocksize_bites;
+		s->volume_size_in_bytes >> s->blocksize_bits;
 	s->reserved_tail_size = 0;
 
 	cmfs_calc_cluster_groups(s->volume_size_in_clusters,
 				 s->blocksize, &cgs);
-	s->global_cgp = cgs.cgs_cpg;
+	s->global_cpg = cgs.cgs_cpg;
 	s->nr_cluster_groups = cgs.cgs_cluster_groups;
-	s->tail_group_bites = cgs.cgs_tail_group_bits;
+	s->tail_group_bits = cgs.cgs_tail_group_bits;
 
 	if (1) {
 		fprintf(stderr, "volume_size_in_clusters = %u\n", s->volume_size_in_clusters);
@@ -655,15 +678,45 @@ fill_defaults(State *s)
 	s->extent_alloc_size_in_clusters = figure_extent_alloc_size(s);
 }
 
+static void handle_signal(int sig)
+{
+	switch(sig) {
+	case SIGTERM:
+	case SIGINT:
+		printf("\nProcess Interrupted.\n");
+		exit(1);
+	default:
+		break;
+	}
+}
+
+static void block_signals(int how)
+{
+	sigset_t sigs;
+
+	sigfillset(&sigs);
+	sigdelset(&sigs, SIGTRAP);
+	sigdelset(&sigs, SIGSEGV);
+	sigprocmask(how, &sigs, (sigset_t *)0);
+
+	return;
+}
+
 int main(int argc, char **argv)
 {
 	State *s;
 	SystemFileDiskRecord *record[NUM_SYSTEM_INODES];
+	SystemFileDiskRecord crap_rec;
 	SystemFileDiskRecord superblock_rec;
 	SystemFileDiskRecord root_dir_rec;
-
-
-
+	SystemFileDiskRecord system_dir_rec;
+	int i, j, num;
+	DirData *root_dir;
+	DirData *system_dir;
+	DirData *orphan_dir;
+	SystemFileDiskRecord *tmprec;
+	char fname[SYSTEM_FILE_NAME_MAX];
+	uint64_t need;
 
 	setbuf(stdout, NULL);
 	setbuf(stderr, NULL);
@@ -673,7 +726,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	if (signal(SIGINT, handle_singal) == SIG_ERR) {
+	if (signal(SIGINT, handle_signal) == SIG_ERR) {
 		fprintf(stderr, "Could not set SIGINT\n");
 		exit(1);
 	}
@@ -715,18 +768,18 @@ int main(int argc, char **argv)
 	clear_both_ends(s);
 
 	init_record(s, &superblock_rec, SFI_OTHER, S_IFREG | 0644);
-	init_record(s, &root_dir_rec, SFI_OTHER, SI_IFREG | 0755);
+	init_record(s, &root_dir_rec, SFI_OTHER, S_IFREG | 0755);
 	init_record(s, &system_dir_rec, SFI_OTHER, S_IFDIR | 0755);
 
 
 	/* currently system_files[i].nr is 1 */
 	for (i = 0; i < NUM_SYSTEM_INODES; i++) {
-		num = system_files[i].nr;
+		num = system_files[i].global ? 1 : CMFS_PER_CPU_NUM;
 		record[i] = do_malloc(s, sizeof(SystemFileDiskRecord) * num);
 
 		for (j = 0; j < num; j ++)
 			init_record(s, &record[i][j],
-				    system_files[i].type, system_file[i].mode);
+				    system_files[i].type, system_files[i].mode);
 	}
 
 	root_dir = alloc_directory(s);
@@ -735,17 +788,17 @@ int main(int argc, char **argv)
 
 
 	/* allocate global bitmap */
-	need = (s->volume_size_in_cluster + 7) >> 3;
-	need = ((need  s->cluster_size - 1) >> s->cluster_size_bites) << s->cluster_size_bits;
+	need = (s->volume_size_in_clusters + 7) >> 3;
+	need = ((need + s->cluster_size - 1) >> s->cluster_size_bits) << s->cluster_size_bits;
 
 	if (!s->quiet)
 		printf("Creating global bitmaps");
 
 	tmprec = &(record[GLOBAL_BITMAP_SYSTEM_INODE][0]);
 	tmprec->extent_off = 0;
-	temrec->extent_len = need;
+	tmprec->extent_len = need;
 
-	s->global_bm = initialize_bitmap(s, s->volume_size_in_cluster,
+	s->global_bm = initialize_bitmap(s, s->volume_size_in_clusters,
 					 s->cluster_size_bits,
 					 "global bitmap", tmprec);
 
@@ -808,14 +861,14 @@ int main(int argc, char **argv)
 		if (feature_skip(s, i))
 			continue;
 
-		num = system_files[i].nr;
+		num = system_files[i].global ? 1: CMFS_PER_CPU_NUM;
 		for (j = 0; j < num; j++) {
 			record[i][j].fe_off = alloc_inode(s, &(record[i][j].suballoc_bit));
 			sprintf(fname, system_files[i].name, j);
 			add_entry_to_directory(
 				s, system_dir, fname,
 				record[i][j].fe_off,
-				S_ISDIR(system_files[i].mode) ? CMFS_FT_DIR : CMFS_FT_FILE);
+				S_ISDIR(system_files[i].mode) ? CMFS_FT_DIR : CMFS_FT_REG_FILE);
 		}
 	}
 
@@ -841,7 +894,7 @@ int main(int argc, char **argv)
 		if (feature_skip(s, i))
 			continue;
 
-		num = system_files[i].nr;
+		num = system_files[i].global ? 1: CMFS_PER_CPU_NUM;
 		for (j = 0; j < num; j++) {
 			tmprec = &(record[i][j]);
 			format_file(s, tmprec);
