@@ -1,3 +1,4 @@
+.PHONY: cmfs_err.c
 cmfs_err.c: cmfs_err.et
 	compile_et cmfs_err.et
 
