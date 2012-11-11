@@ -297,13 +297,11 @@ struct cmfs_super_block {
 	__le32 s_clustersize_bits;
 /*40*/	uint8_t s_label[CMFS_MAX_VOL_LABEL_LEN];
 /*80*/	uint8_t s_uuid[CMFS_VOL_UUID_LEN];
-/*92*/	__le16 s_tunefs_flag;
+/*90*/	__le16 s_tunefs_flag;
+	__le16 s_xattr_inline_size;
 	__le32 s_uuid_hash;
 	__le64 s_first_cluster_group;
-/*A0*/	__le16 s_xattr_inline_size;
-	__le16 s_reserved1[7];
-/*B0*/
-//	__le16 s_max_slots; /* XXX: use this for concurrently inode allocation */
+/*A0*/
 /* XXXX: should pad all rest space of dinode which contains the super block to zero */
 };
 
