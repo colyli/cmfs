@@ -1,1 +1,1 @@
-SUBDIRS = libcmfs mkfs.cmfs
+SUBDIRS = libcmfs mkfs.cmfs misc

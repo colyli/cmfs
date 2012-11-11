@@ -33,4 +33,5 @@ AC_CHECK_FUNCS([getpagesize memset strchr strdup strerror strstr strtoull uname]
 AC_OUTPUT([Makefile
 	   libcmfs/Makefile
 	   mkfs.cmfs/Makefile
+	   misc/Makefile
 	   ])
