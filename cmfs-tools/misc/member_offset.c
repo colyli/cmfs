@@ -184,7 +184,7 @@ void print_cmfs_super_block() {
 	SHOW_OFFSET(struct cmfs_super_block, s_uuid_hash );
 	SHOW_OFFSET(struct cmfs_super_block, s_first_cluster_group);
 	SHOW_OFFSET(struct cmfs_super_block, s_xattr_inline_size);
-	SHOW_OFFSET(struct cmfs_super_block, s_reserved1);
+//	SHOW_OFFSET(struct cmfs_super_block, s_reserved1);
 	END_TYPE(struct cmfs_super_block);
 	printf("\n");
 }

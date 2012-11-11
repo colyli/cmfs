@@ -32,9 +32,9 @@
 0x002	l_count             	+0x02
 0x004	l_next_free_rec     	+0x02
 0x006	l_reserved1         	+0x02
-0x008	l_reserved2         	+0x10
-0x018	l_recs              	+0x00
-	Total               	0x018
+0x008	l_reserved2         	+0x18
+0x020	l_recs              	+0x00
+	Total               	0x020
 
 [off]	cmfs_chain_rec      	[size]
 0x000	c_free              	+0x04
@@ -98,9 +98,8 @@
 0x090	s_tunefs_flag       	+0x02
 0x094	s_uuid_hash         	+0x04
 0x098	s_first_cluster_group	+0x08
-0x0A0	s_xattr_inline_size 	+0x02
-0x0A2	s_reserved1         	+0x0E
-	Total               	0x0B0
+0x092	s_xattr_inline_size 	+0x02
+	Total               	0x0A0
 
 [off]	cmfs_dinode         	[size]
 0x000	i_signature         	+0x08
@@ -138,14 +137,14 @@
 0x09C	id1.bitmap1.i_total 	+0x04
 0x098	id1.journal1.ij_flags	+0x04
 0x09C	id1.journal1.ij_recovery_generation	+0x04
-0x0A0	id2.i_super         	+0xB0
+0x0A0	id2.i_super         	+0xA0
 0x0A0	id2.i_lab           	+0x10
 0x0A0	id2.i_chain         	+0x10
-0x0A0	id2.i_list          	+0x18
+0x0A0	id2.i_list          	+0x20
 0x0A0	id2.i_dealloc       	+0x10
 0x0A0	id2.i_data          	+0x08
 0x0A0	id2.i_symlink       	+0x00
-	Total               	0x150
+	Total               	0x140
 
 [off]	cmfs_dir_entry      	[size]
 0x000	inode               	+0x08
