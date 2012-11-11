@@ -202,7 +202,7 @@ struct cmfs_extent_list {
 	__le16 l_count;		/* Number of extent records */
 	__le16 l_next_free_rec;	/* Next unused extent slot */
 	__le16 l_reserved1;
-/*10*/	__le64 l_reserved2[2];	/* Pad to sizeof(cmfs_extent_record) */
+/*10*/	__le64 l_reserved2[3];	/* Pad to sizeof(cmfs_extent_rec) */
 /*20*/	struct cmfs_extent_rec l_recs[0];	/* Extent records */
 };
 
