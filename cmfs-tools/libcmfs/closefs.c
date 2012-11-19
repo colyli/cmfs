@@ -3,7 +3,7 @@
  *
  * closefs.c
  *
- * Close an CMFS filesystem.  Part of the CMFS userspace library.
+ * Close a CMFS filesystem.  Part of the CMFS userspace library.
  * (Copied and modified from ocfs2-tools/libocfs2/closefs.c)
  *
  * Copyright (C) 2004 Oracle.  All rights reserved.
