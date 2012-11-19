@@ -62,13 +62,15 @@
  * Max cluster size: 32MB
  */
 #define CMFS_MIN_CLUSTERSIZE		4096
+#define CMFS_MIN_CLUSTERSIZE_BITS	12
 #define CMFS_MAX_CLUSTERSIZE		(32*(1<<20))
+#define CMFS_MAX_CLUSTERSIZE_BITS	25
 #define CMFS_DEFAULT_CLUSTERSIZE	(1<<20)
 #define CMFS_MAX_BLOCKSIZE		CMFS_MIN_CLUSTERSIZE
 #define CMFS_MIN_BLOCKSIZE		CMFS_MAX_BLOCKSIZE
 
 #define CMFS_SUPER_BLOCK_SIGNATURE	"CMFSV1"
-
+#define CMFS_GROUP_DESC_SIGNATURE	"GROUP01"
 /*
  * Flags on cmfs_dinode.i_flags
  */
@@ -115,6 +117,8 @@
 
 #define CMFS_FT_MAX		8
 
+
+#define CMFS_RAW_SB(dinode)	(&((dinode)->id2.i_super))
 
 /* System file index */
 enum {
@@ -408,10 +412,58 @@ struct cmfs_dir_block_trailer {
 /*40*/	struct cmfs_block_check db_check; /* Error checking */
 };
 
+/*
+ * Largest bigmap for a block (suballocator) group in bytes.
+ * This limit does not affect cluster groups (global allocator).
+ * Cluster group bitmaps run to the end of the block.
+ */
+#define CMFS_MAX_BG_BITMAP_SIZE		256
+/*
+ * On disk allocator group structure for CMFS
+ */
+struct cmfs_group_desc {
+/*00*/	uint8_t	bg_signature[8];		/* Signature for validation */
+	__le16	bg_size;			/* Size of included bitmap in bytes */
+	__le16	bg_bits;			/* Bits represented by this group */
+	__le16	bg_free_bits_count;		/* Free bits count */
+	__le16	bg_chain;			/* What chain I am in */
+/*10*/	__le32	bg_generation;
+	__le32	bg_reserved1;
+	__le64	bg_next_group;			/* Next group in my list, in blocks */
+/*20*/	__le64	bg_parent_dinode;		/* dinode which owns me, in blocks */
+	__le64	bg_blkno;			/* Where desc stored on disk, in blocks */
+/*30*/	struct cmfs_block_check bg_check;
+	__le64	bg_reserved2;
+/*40*/	union {
+		uint8_t bg_bitmap[0];
+		struct {
+/* XXX: remove this latter ? */
+			uint8_t bg_bitmap_filler[CMFS_MAX_BG_BITMAP_SIZE];
+/*140*/			struct cmfs_extent_list bg_list;
+		};
+	};
+/* Actual on-disk size is one block */
+};
 
+static inline int cmfs_group_bitmap_size(int blocksize,
+					 int suballocator,
+					 uint32_t feature_incompat)
+{
+	int size = blocksize -
+		offsetof(struct cmfs_group_desc, bg_bitmap);
 
+	return size;
+}
 
+static inline int cmfs_chain_recs_per_inode(int blocksize)
+{
+	int size;
 
+	size = blocksize -
+		offsetof(struct cmfs_dinode, id2.i_chain.cl_recs);
+
+	return (size/(sizeof(struct cmfs_chain_rec)));
+}
 
 
 
