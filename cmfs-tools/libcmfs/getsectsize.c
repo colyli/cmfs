@@ -24,7 +24,7 @@
 
 #include "cmfs_err.h"
 
-errcode_t ocfs2_get_device_sectsize(const char *file, int *sectsize)
+errcode_t cmfs_get_device_sectsize(const char *file, int *sectsize)
 {
 	int fd;
 	int ret;
