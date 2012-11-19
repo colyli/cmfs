@@ -4,12 +4,37 @@
 
 #include "cmfs_err.h"
 
+
+unsigned int cmfs_dir_trailer_blk_off(cmfs_filesys *fs)
+{
+	return (fs->fs_blocksize - sizeof(struct cmfs_dir_block_trailer));
+}
+
+int cmfs_supports_dir_trailer(cmfs_filesys *fs)
+{
+	return cmfs_meta_ecc(CMFS_RAW_SB(fs->fs_super)) ||
+		cmfs_supports_indexed_dirs(CMFS_RAW_SB(fs->fs_super));
+}
+
 struct cmfs_dir_block_trailer *
 cmfs_dir_trailer_from_block(cmfs_filesys *fs, void  *data)
 {
 	char *p = data;
 	p += cmfs_dir_trailer_blk_off(fs);
 	return (struct cmfs_dir_block_trailer *)p;
+}
+
+void cmfs_swap_dir_trailer(struct cmfs_dir_block_trailer *trailer)
+{
+	if (cpu_is_little_endian)
+		return;
+
+	trailer->db_compat_inode = bswap_64(trailer->db_compat_inode);
+	trailer->db_compat_rec_len = bswap_16(trailer->db_compat_rec_len);
+	trailer->db_blkno = bswap_64(trailer->db_blkno);
+	trailer->db_parent_dinode = bswap_64(trailer->db_parent_dinode);
+	trailer->db_free_rec_len = bswap_16(trailer->db_free_rec_len);
+	trailer->db_free_next = bswap_64(trailer->db_free_next);
 }
 
 /*
