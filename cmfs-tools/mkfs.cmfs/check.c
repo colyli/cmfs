@@ -24,6 +24,10 @@
  *
  */
 
+#include <stdio.h>
+
+
+#include <cmfs/cmfs.h>
 #include "mkfs.h"
 #define WHOAMI	"mkfs.cmfs"
 
