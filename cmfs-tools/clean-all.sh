@@ -13,8 +13,15 @@ rm -rf install-sh
 rm -rf libcmfs/.deps/
 rm -rf libcmfs/Makefile
 rm -rf libcmfs/Makefile.in
+rm -rf libcmfs/*.o
+rm -rf libcmfs/libcmfs.a
+rm -rf libcmfs/cmfs_err.c
+rm -rf libcmfs/cmfs_err.h
 rm -rf missing
 rm -rf mkfs.cmfs/.deps/
 rm -rf mkfs.cmfs/Makefile
 rm -rf mkfs.cmfs/Makefile.in
-rm -rf libcmfs/*.o
+rm -rf mkfs.cmfs/*.o
+rm -rf misc/.deps
+rm -rf misc/Makefile
+rm -rf misc/Makefile.in
