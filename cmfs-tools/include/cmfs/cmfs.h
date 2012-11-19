@@ -39,7 +39,15 @@
 #define CMFS_FLAG_RO			0x00
 #define CMFS_FLAG_RW			0x01
 #define CMFS_FLAG_DIRTY			0x04
-#define CMFS_FLAG_BUFFERED			0x10
+#define CMFS_FLAG_BUFFERED		0x10
+
+/* Check if mounted flags */
+#define CMFS_MF_MOUNTED			0x01
+#define CMFS_MF_ISROOT			0x02
+#define CMFS_MF_READONLY		0x04
+#define CMFS_MF_SWAP			0x08
+#define CMFS_MF_BUSY			0x10
+
 
 
 typedef struct _cmfs_filesys cmfs_filesys;
@@ -134,7 +142,30 @@ struct cmfs_dir_block_trailer *cmfs_dir_trailer_from_block(cmfs_filesys *fs,
 							   void  *data);
 errcode_t cmfs_swap_dir_entries_from_cpu(void *buf, uint64_t bytes);
 errcode_t cmfs_swap_dir_entries_to_cpu(void *buf, uint64_t bytes);
+void cmfs_swap_dir_trailer(struct cmfs_dir_block_trailer *trailer);
 errcode_t io_set_blksize(io_channel *channel, int blksize);
+int cmfs_supports_dir_trailer(cmfs_filesys *fs);
+errcode_t cmfs_open(const char *name,
+		    int flags,
+		    unsigned int superblock,
+		    unsigned int block_size,
+		    cmfs_filesys **ret_fs);
+errcode_t cmfs_close(cmfs_filesys *fs);
+errcode_t cmfs_flush(cmfs_filesys *fs);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 #endif
