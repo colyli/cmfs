@@ -46,7 +46,7 @@
  */
 #define CMFS_FEATURE_COMPAT_BACKUP_SB		0x0001
 
-
+#define CLEAR_CHUNK	(1<<20)
 
 
 /* Journal limits (in bytes) */
@@ -141,8 +141,8 @@ struct _State {
 	uint32_t nr_cluster_groups;
 	uint16_t global_cpg;
 	uint16_t tail_group_bits;
-	uint32_t first_cluster_group;
-	uint64_t first_cluster_group_blkno;
+	uint32_t first_cluster_group;		/* in cluster unit */
+	uint64_t first_cluster_group_blkno;	/* in block unit */
 
 	cmfs_fs_options feature_flags;
 };
@@ -166,7 +166,7 @@ struct _SystemFileDiskRecord {
 	uint16_t suballoc_bit;
 	uint64_t extent_off;
 	uint64_t extent_len;
-	uint64_t file_size;
+	uint64_t file_size;	/* <= extent_len */
 
 	uint64_t chain_off;
 	AllocGroup *group;
@@ -177,6 +177,7 @@ struct _SystemFileDiskRecord {
 	int flags;
 	int links;
 	int mode;
+	int cluster_bitmap;
 
 	/* record the dir entry so that inline dir can be sotred with file */
 	DirData *dir_data;

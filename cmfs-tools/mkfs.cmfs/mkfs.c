@@ -34,8 +34,11 @@
 #include <et/com_err.h>
 #include <inttypes.h>
 #include <signal.h>
+#include <uuid/uuid.h>
+
 
 #include <cmfs/cmfs.h>
+#include <cmfs/bitops.h>
 #include <cmfs-kernel/cmfs_fs.h>
 #include "mkfs.h"
 #include "../libcmfs/cmfs_err.h"
@@ -55,6 +58,32 @@ static SystemFileInfo system_files[] = {
 	{"truncate_log", SFI_TRUNCATE_LOG, 1, S_IFREG | 0644},
 };
 
+static void version(const char *progname)
+{
+	fprintf(stderr, "%s %s\n", progname, VERSION);
+}
+
+static void usage(const char *progname)
+{
+	fprintf(stderr, "usage: %s not finished yet.\n",
+		progname);
+	exit(1);
+}
+
+static void do_pwrite(State *s,
+		      const void *buf,
+		      size_t count,
+		      uint64_t offset)
+{
+	ssize_t ret;
+
+	ret = pwrite64(s->fd, buf, count, offset);
+	if (ret < 0) {
+		com_err(s->progname, 0, "Could not write: %s",
+			strerror(errno));
+		exit(1);
+	}
+}
 
 static void open_device(State *s)
 {
@@ -72,6 +101,21 @@ static void close_device(State *s)
 	fsync(s->fd);
 	close(s->fd);
 	s->fd = -1;
+}
+
+static uint64_t get_valid_size(uint64_t num, uint64_t lo, uint64_t hi)
+{
+	uint64_t tmp = lo;
+
+	for (; lo <= hi; lo <<= 1) {
+		if (lo == num)
+			return num;
+		if (lo < num)
+			tmp = lo;
+		else
+			break;
+	}
+	return tmp;
 }
 
 /* return aligned memory for direct io */
@@ -194,6 +238,22 @@ write_metadata(State *s, SystemFileDiskRecord *rec, void *src)
 	free(buf);
 }
 
+static void fill_fake_fs(State *s, cmfs_filesys *fake_fs, void *buf)
+{
+	memset(buf, 0, s->blocksize);
+	memset(fake_fs, 0, sizeof(cmfs_filesys));
+
+	fake_fs->fs_super = buf;
+	fake_fs->fs_blocksize = s->blocksize;
+
+	CMFS_RAW_SB(fake_fs->fs_super)->s_feature_incompat =
+		s->feature_flags.opt_incompat;
+	CMFS_RAW_SB(fake_fs->fs_super)->s_feature_ro_compat =
+		s->feature_flags.opt_ro_compat;
+	CMFS_RAW_SB(fake_fs->fs_super)->s_feature_compat =
+		s->feature_flags.opt_compat;
+}
+
 static void mkfs_swap_dir(State *s, DirData *dir,
 			  errcode_t (*swap_entry_func)(void *buf,
 			  			       uint64_t bytes))
@@ -214,7 +274,7 @@ static void mkfs_swap_dir(State *s, DirData *dir,
 		end = cmfs_dir_trailer_blk_off(&fake_fs);
 
 	while(offset < dir->record->file_size) {
-		swap_entry_fun(p, end);
+		swap_entry_func(p, end);
 		/* we have trailer to handle */
 		if (end != s->blocksize) {
 			trailer = cmfs_dir_trailer_from_block(&fake_fs, p);
@@ -251,6 +311,39 @@ write_directory_data(State *s, DirData *dir)
 		write_metadata(s, dir->record, dir->buf);
 		mkfs_swap_dir_to_cpu(s, dir);
 	}
+}
+
+static int get_number(char *arg, uint64_t *res)
+{
+	char *ptr = NULL;
+	uint64_t num;
+
+	num = strtoul(arg, &ptr, 0);
+
+	if ((ptr == arg) || (num == UINT64_MAX))
+		return (-EINVAL);
+
+	switch(*ptr) {
+	case '\0':
+		break;
+	case 'g':
+	case 'G':
+		num *= 1024;
+	case 'm':
+	case 'M':
+		num *= 1024;
+	case 'k':
+	case 'K':
+		num *= 1024;
+	case 'b':
+	case 'B':
+		break;
+	default:
+		return (-EINVAL);
+	}
+	*res = num;
+
+	return 0;
 }
 
 static void
@@ -458,7 +551,7 @@ get_state(int argc, char **argv)
 
 	/* unknow option existing */
 	if (optind < argc)
-		usage();
+		usage(progname);
 
 	if (!quiet || show_version)
 		version(progname);
@@ -638,7 +731,7 @@ fill_defaults(State *s)
 
 	/* XXX: will remove this in future */
 	if (s->blocksize != 4096) {
-		fpritnf(stderr, "%s:%d s->blocksize is not 4096\n", __func__, __LINE__);
+		fprintf(stderr, "%s:%d s->blocksize is not 4096\n", __func__, __LINE__);
 		exit(1);
 	}
 
@@ -700,6 +793,301 @@ static void block_signals(int how)
 	sigprocmask(how, &sigs, (sigset_t *)0);
 
 	return;
+}
+
+
+/*
+ * XXX: it's buggy here. If there is busy bit after free bit,
+ * the code may wrong with over lapping 1 busy bit.
+ */
+static int alloc_from_group(State *s,
+			    uint16_t count,
+			    AllocGroup *group,
+			    uint64_t *start_blkno,
+			    uint16_t *num_bits)
+{
+	uint16_t start_bit, end_bit;
+
+	start_bit = cmfs_find_first_bit_clear(group->gd->bg_bitmap,
+					      group->gd->bg_bits);
+	while(start_bit < group->gd->bg_bits) {
+		end_bit = cmfs_find_next_bit_set(group->gd->bg_bitmap,
+						 group->gd->bg_bits,
+						 start_bit);
+		if ((end_bit - start_bit) >= count) {
+			for(*num_bits = 0; *num_bits < count; (*num_bits) ++)
+				cmfs_set_bit(start_bit + *num_bits,
+					     group->gd->bg_bitmap);
+			group->gd->bg_free_bits_count -= *num_bits;
+			group->alloc_inode->bi.used_bits += *num_bits;
+			*start_blkno = group->gd->bg_blkno + start_bit;
+			return 0;
+		}
+		start_bit = end_bit;
+	}
+	com_err(s->progname, 0,
+		"Could not allocate %"PRIu16"bits from %s alloc group",
+		count, group->name);
+	exit(1);
+	/* dummy */
+	return 1;
+}
+
+static uint64_t alloc_inode(State *s, uint16_t *suballoc_bit)
+{
+	uint64_t ret;
+	uint16_t num;
+
+	alloc_from_group(s, 1, s->system_group, &ret, &num);
+
+	*suballoc_bit = (int)(ret - s->system_group->gd->bg_blkno);
+
+	return (ret << s->blocksize_bits);
+}
+
+static DirData * alloc_directory(State *s)
+{
+	DirData *dir;
+	dir = do_malloc(s, sizeof(DirData));
+	memset(dir, 0, sizeof(DirData));
+
+	return dir;
+}
+
+static AllocGroup *initialize_alloc_group(State *s,
+					  const char *name,
+					  SystemFileDiskRecord *alloc_inode,
+					  uint64_t blkno,
+					  uint16_t chain,
+					  uint16_t cpg,
+					  uint16_t bpc)
+{
+	AllocGroup *group;
+
+	group = do_malloc(s, sizeof(AllocGroup));
+	memset(group, 0, sizeof(AllocGroup));
+
+	group->gd = do_malloc(s, s->blocksize);
+	memset(group->gd, 0, s->blocksize);
+
+	strcpy((char *)group->gd->bg_signature, CMFS_GROUP_DESC_SIGNATURE);
+	group->gd->bg_generation = s->vol_generation;
+	group->gd->bg_size =
+		(uint32_t)cmfs_group_bitmap_size(s->blocksize, 0, 0);
+	group->gd->bg_bits = cpg * bpc;
+	group->gd->bg_chain = chain;
+	group->gd->bg_parent_dinode = alloc_inode->fe_off >> s->blocksize_bits;
+	group->gd->bg_blkno = blkno;
+
+	/*
+	 * First bit set to account for the descriptor block
+	 *
+	 * For first cluster group of the volume, bit 0 does
+	 * not represent group desc. Anyway because cluster 0
+	 * contains volum header/label and superblock, it
+	 * should be set as well.
+	 */
+	cmfs_set_bit(0, group->gd->bg_bitmap);
+	group->gd->bg_free_bits_count = group->gd->bg_bits - 1;
+
+	alloc_inode->bi.total_bits += group->gd->bg_bits - 1;
+	alloc_inode->bi.used_bits ++;
+	group->alloc_inode = alloc_inode;
+
+	group->name = strdup(name);
+
+	return group;
+}
+
+static AllocBitmap *initialize_bitmap(State *s,
+				      uint32_t bits,
+				      uint32_t unit_bits,
+				      const char *name,
+				      SystemFileDiskRecord *bm_record)
+{
+	AllocBitmap *bitmap;
+	uint64_t blkno;
+	int i, j, cpg, chain, c_to_b_bits;
+	int recs_per_inode = cmfs_chain_recs_per_inode(s->blocksize);
+	int wrapped = 0;
+
+	bitmap = do_malloc(s, sizeof(AllocBitmap));
+	memset(bitmap, 0, sizeof(AllocBitmap));
+
+	bitmap->valid_bits = bits;
+	bitmap->unit_bits = unit_bits;
+	bitmap->unit = 1 << unit_bits;
+	bitmap->name = strdup(name);
+
+	bm_record->file_size = s->volume_size_in_bytes;
+	bm_record->fe_off = 0;
+
+	bm_record->bi.used_bits = 0;
+
+	/* this will be set as we add groups */
+	bm_record->bi.total_bits = 0;
+	bm_record->bitmap = bitmap;
+	bitmap->bm_record = bm_record;
+
+	bitmap->groups = do_malloc(s,
+				   s->nr_cluster_groups *
+				   sizeof(AllocGroup *));
+	memset(bitmap->groups, 0,
+	       s->nr_cluster_groups * sizeof(AllocGroup *));
+
+	c_to_b_bits = s->cluster_size_bits - s->blocksize_bits;
+
+	/* 
+	 * s->first_cluster_group & s->first_cluster_group_blkno
+	 * point to the location where group desc of first
+	 * cluster group is located on disk.
+	 *
+	 * For the first group itself, including the
+	 * clusters/blocks which holding volume header/label and
+	 * super block.
+	 */
+	s->first_cluster_group = (CMFS_SUPER_BLOCK_BLKNO + 1);
+	s->first_cluster_group += ((1 << c_to_b_bits) - 1);
+	s->first_cluster_group >>= c_to_b_bits;
+
+	s->first_cluster_group_blkno =
+		(uint64_t)(s->first_cluster_group << c_to_b_bits);
+
+	/* initialize bitmap for 1st group */
+	bitmap->groups[0] =
+		initialize_alloc_group(s,
+				       "stupid",
+				       bm_record,
+				       s->first_cluster_group_blkno,
+				       0,
+				       s->global_cpg,
+				       1);
+	/*
+	 * The first bit is set by initialize_alloc_group(),
+	 * hence we start at 1. For this group (which contains
+	 * the clusters containing the superblock and first
+	 * group descriptor), we have to set these by hand.
+	 * because s->first_cluster_group contains group desc,
+	 * it should be set as well.
+	 */
+	for (i = 1; i <= s->first_cluster_group; i++) {
+		cmfs_set_bit(i, bitmap->groups[0]->gd->bg_bitmap);
+		bitmap->groups[0]->gd->bg_free_bits_count--;
+		bm_record->bi.used_bits++;
+	}
+	bitmap->groups[0]->chain_total = s->global_cpg;
+	bitmap->groups[0]->chain_free =
+		bitmap->groups[0]->gd->bg_free_bits_count;
+
+	chain = 1;
+	blkno = (uint64_t)(s->global_cpg <<
+			(s->cluster_size_bits - s->blocksize_bits));
+	cpg = s->global_cpg;
+	for (i = 1; i < s->nr_cluster_groups; i++) {
+		if (i == (s->nr_cluster_groups - 1))
+			cpg = s->tail_group_bits;
+		/* XXX: currently group desc is located on first
+		 * cluster of each cluster group. In future all
+		 * group desc should be located together like
+		 * flex_bg in Ext4.*/
+		bitmap->groups[i] =
+			initialize_alloc_group(s,
+					       "stupid",
+					       bm_record,
+					       blkno,
+					       chain,
+					       cpg,
+					       1);
+		if (wrapped) {
+			/* Link the previous group to this one */
+			j = i - recs_per_inode;
+			bitmap->groups[j]->gd->bg_next_group = blkno;
+			bitmap->groups[j]->next = bitmap->groups[i];
+		}
+
+		bitmap->groups[chain]->chain_total +=
+			bitmap->groups[i]->gd->bg_bits;
+		bitmap->groups[chain]->chain_free =
+			bitmap->groups[i]->gd->bg_free_bits_count;
+
+		blkno = (uint64_t)(s->global_cpg <<
+				(s->cluster_size_bits - s->blocksize_bits));
+		chain ++;
+		/* XXX: need to understand how chain records work */
+		if (chain >= recs_per_inode) {
+			chain = 0;
+			wrapped = 1;
+		}
+	}
+
+	if (!wrapped)
+		bitmap->num_chains = chain;
+	else
+		bitmap->num_chains = recs_per_inode;
+
+	/* by now, this should be accurate */
+	if (bm_record->bi.total_bits != s->volume_size_in_clusters) {
+		fprintf(stderr, "bitmap total and num clusters don't match!"
+				" %u, %u\n",
+				bm_record->bi.total_bits,
+				s->volume_size_in_clusters);
+		exit(1);
+	}
+	return bitmap;
+}
+
+
+static void print_state(State *s)
+{
+	printf("print_state() not implemented yet.\n");
+	exit(1);
+}
+
+static void clear_both_ends(State *s)
+{
+	char *buf = NULL;
+	buf = do_malloc(s, CLEAR_CHUNK);
+	memset(buf, 0, CLEAR_CHUNK);
+
+	/* start of volume */
+	do_pwrite(s, buf, CLEAR_CHUNK, 0);
+	/* end of volume */
+	do_pwrite(s, buf, CLEAR_CHUNK, (s->volume_size_in_bytes - CLEAR_CHUNK));
+
+	free(buf);
+}
+
+static void init_record(State *s,
+			SystemFileDiskRecord *rec,
+			int type,
+			int mode)
+{
+	memset(rec, 0, sizeof(SystemFileDiskRecord));
+
+	rec->mode = mode;
+	rec->links = S_ISDIR(mode) ? 0 : 1;
+	rec->bi.used_bits = rec->bi.total_bits = 0;
+	rec->flags = CMFS_VALID_FL | CMFS_SYSTEM_FL;
+
+	switch(type) {
+	case SFI_JOURNAL:
+		rec->flags |= CMFS_JOURNAL_FL;
+		break;
+	case SFI_LOCAL_ALLOC:
+		rec->flags |= (CMFS_BITMAP_FL | CMFS_LOCAL_ALLOC_FL);
+		break;
+	case SFI_CLUSTER:
+		rec->cluster_bitmap = 1;
+	case SFI_CHAIN:
+		rec->flags |= (CMFS_BITMAP_FL | CMFS_CHAIN_FL);
+		break;
+	case SFI_TRUNCATE_LOG:
+		rec->flags |= CMFS_DEALLOC_FL;
+		break;
+	case SFI_OTHER:
+	default:
+		break;
+	};
 }
 
 int main(int argc, char **argv)
@@ -787,8 +1175,9 @@ int main(int argc, char **argv)
 	orphan_dir = alloc_directory(s);
 
 
-	/* allocate global bitmap */
+	/* how many bytes needed for global bitmap */
 	need = (s->volume_size_in_clusters + 7) >> 3;
+	/* make it to be cluster-size-aligned */
 	need = ((need + s->cluster_size - 1) >> s->cluster_size_bits) << s->cluster_size_bits;
 
 	if (!s->quiet)
@@ -821,7 +1210,7 @@ int main(int argc, char **argv)
 
 	tmprec->group = s->system_group;
 	tmprec->chain_off =
-		tmprec->group->gd->bg_blokno << s->blocksize_bits;
+		tmprec->group->gd->bg_blkno << s->blocksize_bits;
 
 	fsync(s->fd);
 
