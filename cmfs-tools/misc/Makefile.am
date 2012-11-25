@@ -1,2 +1,2 @@
 bin_PROGRAMS = member_offset
-mkfs_cmfs_SOURCES = member_offset.c
+member_offset_SOURCES = member_offset.c
