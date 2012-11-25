@@ -12,7 +12,12 @@
  * Modified for CMFS by Coly Li <i@coly.li>
  */
 
-
+#ifndef _XOPEN_SOURCE
+# define _XOPEN_SOURCE 600
+#endif
+#ifndef _LARGEFILE64_SOURCE
+# define _LARGEFILE64_SOURCE
+#endif
 /* Returns the number of blocks in a partition */
 #include <et/com_err.h>
 #include <fcntl.h>
@@ -21,6 +26,7 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <linux/fs.h>
+#include <unistd.h>
 
 #include "cmfs_err.h"
 
