@@ -38,8 +38,15 @@
 /* falgs for cmfs_filesys structure */
 #define CMFS_FLAG_RO			0x00
 #define CMFS_FLAG_RW			0x01
+#define CMFS_FLAG_CHANGED		0x02
 #define CMFS_FLAG_DIRTY			0x04
+#define CMFS_FLAG_SWAP_BYTES		0x08
 #define CMFS_FLAG_BUFFERED		0x10
+#define CMFS_FLAG_IMAGE_FILE		0x20
+#define CMFS_FLAG_NO_ECC_CHECKS		0x40
+#define CMFS_FLAG_HARD_RO		0x80
+
+
 
 /* Check if mounted flags */
 #define CMFS_MF_MOUNTED			0x01
@@ -48,6 +55,8 @@
 #define CMFS_MF_SWAP			0x08
 #define CMFS_MF_BUSY			0x10
 
+/* define CMFS_SB for cmfs-tools */
+#define CMFS_SB(sb)	(sb)
 
 
 typedef struct _cmfs_filesys cmfs_filesys;
@@ -152,6 +161,84 @@ errcode_t cmfs_open(const char *name,
 		    cmfs_filesys **ret_fs);
 errcode_t cmfs_close(cmfs_filesys *fs);
 errcode_t cmfs_flush(cmfs_filesys *fs);
+errcode_t cmfs_validate_meta_ecc(cmfs_filesys *fs,
+				void *data,
+				struct cmfs_block_check *bc);
+void cmfs_freefs(cmfs_filesys *fs);
+errcode_t cmfs_malloc(unsigned long size, void *ptr);
+errcode_t cmfs_malloc0(unsigned long size, void *ptr);
+errcode_t cmfs_malloc_blocks(io_channel *channel, int num_blocks, void *ptr);
+errcode_t cmfs_malloc_block(io_channel *channel, void *ptr);
+errcode_t cmfs_free(void *ptr);
+int io_get_blksize(io_channel *channel);
+errcode_t io_read_block_nocache(io_channel *channel,
+				int64_t blkno,
+				int count,
+				char *data);
+void cmfs_swap_inode_to_cpu(cmfs_filesys *fs, struct cmfs_dinode *di);
+errcode_t io_open(const char *name, int flags, io_channel **channel);
+int io_is_device_readonly(io_channel *channel);
+errcode_t io_read_block(io_channel *channel,
+			int64_t blkno,
+			int count,
+			char *data);
+errcode_t io_close(io_channel *channel);
+void cmfs_swap_extent_list_to_cpu(cmfs_filesys *fs,
+				  void *obj,
+				  struct cmfs_extent_list *el);
+
+
+
+
+
+
+static inline uint64_t cmfs_clusters_to_blocks(cmfs_filesys *fs,
+					       uint32_t clusters)
+{
+	int c_to_b_bits =
+		CMFS_RAW_SB(fs->fs_super)->s_clustersize_bits -
+		CMFS_RAW_SB(fs->fs_super)->s_blocksize_bits;
+
+	return (uint64_t)(clusters << c_to_b_bits);
+}
+
+static inline int cmfs_meta_ecc(struct cmfs_super_block *csb)
+{
+	if (CMFS_HAS_COMPAT_FEATURE(csb,
+				    CMFS_FEATURE_COMPAT_META_ECC))
+		return 1;
+	return 0;
+}
+
+static inline int cmfs_supports_indexed_dirs(struct cmfs_super_block *csb)
+{
+	if (CMFS_HAS_COMPAT_FEATURE(csb,
+				    CMFS_FEATURE_COMPAT_INDEXED_DIRS))
+		return 1;
+	return 0;
+}
+
+/*
+ * When we are swapping an element of some kind of list, a mistaken count
+ * can lead us to go beyond the edge of a block buffer. This function
+ * guards agains that. It returns 1 if the element would walk off the end
+ * of the block buffer.
+ */
+static inline int cmfs_swap_barrier(cmfs_filesys *fs,
+				    void *block_buffer,
+				    void *element,
+				    size_t element_size)
+{
+	char *limit, *end;
+
+	limit = block_buffer + fs->fs_blocksize;
+	end = element + element_size;
+
+	return (end > limit);
+}
+
+
+
 
 
 
