@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <cmfs/cmfs.h>
 
@@ -25,10 +26,9 @@ static errcode_t check_mntent_file(const char *mounts_file,
 	struct mntent	*mnt;
 	struct stat	st_buf;
 	errcode_t	retval = ENOENT;
-	dev_t		file_dev = 0, file_rdev = 0;
+	dev_t		file_dev = 0;
 	ino_t		file_ino = 0;
 	FILE		*f;
-	int		fd;
 
 	*mount_flags = 0;
 	if ((f = setmntent(mounts_file, "r")) == NULL)
@@ -87,11 +87,7 @@ static int is_swap_device(const char *file)
 {
 	FILE	*f;
 	char	buf[1024], *cp;
-	dev_t	file_dev;
-	struct stat st_buf;
 	int	ret = 0;
-
-	file_dev = 0;
 
 	if ((f = fopen("/proc/swaps", "r")) == NULL)
 		return 0;
