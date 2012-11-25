@@ -23,22 +23,12 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <et/com_err.h>
-
-static int valid_offset(int fd, off64_t offset)
-{
-	char ch;
-
-	if (lseek64(fd, offset, 0) < 0)
-		return 0;
-	if (read(fd, &ch, 1) < 1)
-		return 0;
-	return 1;
-}
 
 errcode_t cmfs_get_device_size(const char *file, int blocksize,
 			       uint64_t *retblocks)
