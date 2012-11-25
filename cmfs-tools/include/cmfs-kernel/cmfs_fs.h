@@ -29,6 +29,8 @@
 #define _CMFS_FS_H
 
 #include <linux/types.h>
+#include <stdint.h>
+#include <stddef.h>
 
 /* Version */
 #define CMFS_MAJOR_REV_LEVEL		0
@@ -119,6 +121,23 @@
 
 
 #define CMFS_RAW_SB(dinode)	(&((dinode)->id2.i_super))
+#define CMFS_HAS_COMPAT_FEATURE(sb, mask) \
+	(CMFS_SB(sb)->s_feature_compat & (mask))
+
+
+/* Compatibility flags */
+#define CMFS_FEATURE_COMPAT_BACKUP_SB		0x0001
+#define CMFS_FEATURE_COMPAT_JBD2_SB		0x0002
+#define CMFS_FEATURE_COMPAT_INLINE_DATA		0x0004
+#define CMFS_FEATURE_COMPAT_META_ECC		0x0008
+#define CMFS_FEATURE_COMPAT_INDEXED_DIRS	0x0010
+#define CMFS_FEATURE_COMPAT_REFCOUNT_TREE	0x0020
+#define CMFS_FEATURE_COMPAT_UNWRITTEN		0x0040
+#define CMFS_FEATURE_COMPAT_TUNEFS_INPROG	0x0080
+#define CMFS_FEATURE_COMPAT_RESIZE_INPROG	0x0100
+
+
+
 
 /* System file index */
 enum {
@@ -346,7 +365,7 @@ struct cmfs_dinode {
 /*98*/	union {
 		__le64 i_pad1;
 		struct {
-			__le64 i_rdev;
+			__le64 i_rdev;	/* Raw device number */
 		} dev1;
 		struct {
 			__le32 i_used;
@@ -465,7 +484,12 @@ static inline int cmfs_chain_recs_per_inode(int blocksize)
 	return (size/(sizeof(struct cmfs_chain_rec)));
 }
 
-
+static inline int cmfs_max_inline_data(int blocksize,
+				       struct cmfs_dinode *di)
+{
+	return (blocksize - 
+		offsetof(struct cmfs_dinode, id2.i_data.id_data));
+}
 
 
 
