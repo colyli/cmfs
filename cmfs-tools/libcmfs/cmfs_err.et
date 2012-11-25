@@ -54,4 +54,10 @@ ec	CMFS_ET_BAD_DEVICE_NAME,
 ec	CMFS_ET_DIR_CORRUPTED,
 	"CMFS directory corrupted"
 
+ec	CMFS_ET_CORRUPT_SUPERBLOCK,
+	"The CMFS superblock is corrupt"
+
+ec	CMFS_ET_BAD_MAGIC,
+	"Bad magic number in superblock"
+
 	end
