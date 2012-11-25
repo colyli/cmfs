@@ -41,6 +41,12 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
+#include <assert.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+
+
 #include <cmfs/cmfs.h>
 #include <cmfs-kernel/kernel-list.h>
 #include <cmfs/kernel-rbtree.h>
