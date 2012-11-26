@@ -189,3 +189,5 @@ struct _DirData {
 
 	SystemFileDiskRecord *record;
 };
+
+int cmfs_check_volume(State *s);
