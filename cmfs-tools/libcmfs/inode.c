@@ -211,6 +211,24 @@ static int has_extents(struct cmfs_dinode *di)
 	return 1;
 }
 
+void cmfs_swap_inode_from_cpu(cmfs_filesys *fs,
+			      struct cmfs_dinode *di)
+{
+	if (cpu_is_little_endian)
+		return;
+
+	if (has_extents(di))
+		cmfs_swap_extent_list_from_cpu(fs,
+					       di,
+					       &di->id2.i_list);
+	if ((di->i_dyn_features & CMFS_INLINE_DATA_FL) &&
+	    S_ISDIR(di->i_mode))
+		cmfs_swap_inline_dir(fs, di, 0);
+	cmfs_swap_inode_third(fs, di);
+	cmfs_swap_inode_second(di);
+	cmfs_swap_inode_first(di);
+}
+
 void cmfs_swap_inode_to_cpu(cmfs_filesys *fs, struct cmfs_dinode *di)
 {
 	if (cpu_is_little_endian)
