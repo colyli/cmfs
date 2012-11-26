@@ -35,6 +35,7 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <uuid/uuid.h>
+#include <ctype.h>
 
 
 #include <cmfs/cmfs.h>
@@ -159,6 +160,40 @@ static void format_leading_space(State *s)
 	free(buf);
 }
 
+static void fill_fake_fs(State *s, cmfs_filesys *fake_fs, void *buf)
+{
+	memset(buf, 0, s->blocksize);
+	memset(fake_fs, 0, sizeof(cmfs_filesys));
+
+	fake_fs->fs_super = buf;
+	fake_fs->fs_blocksize = s->blocksize;
+
+	CMFS_RAW_SB(fake_fs->fs_super)->s_feature_incompat =
+		s->feature_flags.opt_incompat;
+	CMFS_RAW_SB(fake_fs->fs_super)->s_feature_ro_compat =
+		s->feature_flags.opt_ro_compat;
+	CMFS_RAW_SB(fake_fs->fs_super)->s_feature_compat =
+		s->feature_flags.opt_compat;
+}
+
+static void mkfs_swap_inode_from_cpu(State *s,
+				     struct cmfs_dinode *di)
+{
+	cmfs_filesys fake_fs;
+	char super_buf[CMFS_MAX_BLOCKSIZE];
+
+	fill_fake_fs(s, &fake_fs, super_buf);
+	cmfs_swap_inode_from_cpu(&fake_fs, di);
+}
+
+/* XXX: not implemented yet */
+static void mkfs_compute_meta_ecc(State *s,
+				  void *data,
+				  struct cmfs_block_check *bc)
+{
+	do{}while(0);
+}
+
 static void
 format_superblock(State *s, SystemFileDiskRecord *rec,
 		  SystemFileDiskRecord *root_rec, SystemFileDiskRecord *sys_rec)
@@ -236,22 +271,6 @@ write_metadata(State *s, SystemFileDiskRecord *rec, void *src)
 	do_pwrite(s, buf, rec->extent_len, rec->extent_off);
 
 	free(buf);
-}
-
-static void fill_fake_fs(State *s, cmfs_filesys *fake_fs, void *buf)
-{
-	memset(buf, 0, s->blocksize);
-	memset(fake_fs, 0, sizeof(cmfs_filesys));
-
-	fake_fs->fs_super = buf;
-	fake_fs->fs_blocksize = s->blocksize;
-
-	CMFS_RAW_SB(fake_fs->fs_super)->s_feature_incompat =
-		s->feature_flags.opt_incompat;
-	CMFS_RAW_SB(fake_fs->fs_super)->s_feature_ro_compat =
-		s->feature_flags.opt_ro_compat;
-	CMFS_RAW_SB(fake_fs->fs_super)->s_feature_compat =
-		s->feature_flags.opt_compat;
 }
 
 static void mkfs_swap_dir(State *s, DirData *dir,
@@ -411,6 +430,28 @@ parse_journal_opts(char *progname, const char *opts,
 	free(options);
 }
 
+/*
+ * Translate 32 bytes uuid to 36 bytes uuid format.
+ * for example:
+ * 32bytes uuid: 178BDC83D50241EF94EB474A677D498B
+ * 36bytes uuid: 178BDC83-D502-41EF-94EB-474A677D498B
+ */
+static void translate_uuid(char *uuid_32, char *uuid_36)
+{
+	int i;
+	char *cp = uuid_32;
+
+	for (i = 0; i < 36; i++)
+	{
+		if ((i == 8) || (i == 13) ||
+		    (i == 18) || (i == 23)) {
+			uuid_36[i] = '-';
+			continue;
+		}
+		uuid_32[i] = *cp;
+		cp ++;
+	}
+}
 
 /* non-alpha-code dummy */
 enum {
@@ -422,23 +463,22 @@ static State *
 get_state(int argc, char **argv)
 {
 	char *progname;
-	unsigned int blocksize =0;
 	unsigned int cluster_size = 0;
 	char *vol_label = NULL;
 	char *dummy;
 	State *s;
 	int c;
-	int verbose = 0, quiet = 0, force = 0, xtool = 0;
+	int verbose = 0, quiet = 0, force = 0;
 	int show_version = 0, dry_run = 0;
 	char *device_name;
 	char *uuid = NULL, uuid_36[37] = {'\0'}, *uuid_p;
 	int ret;
 	uint64_t val;
 	uint64_t journal_size_in_bytes = 0;
-	int mount = -1;
-	int no_backup_super = -1;
-	cmfs_fs_options feature_flags = {0, 0, 0};
-	cmfs_fs_options reverse_flags = {0, 0, 0};
+//	int mount = -1;
+//	int no_backup_super = -1;
+//	cmfs_fs_options feature_flags = {0, 0, 0};
+//	cmfs_fs_options reverse_flags = {0, 0, 0};
 
 	static struct option long_options[] = {
 		{"cluster-size",	1, 0, 'C'},
@@ -608,8 +648,8 @@ static uint64_t align_bytes_to_clusters_ceil(State *s,
 
 	/* deal with wrapping */
 	if (ret < bytes) {
-		fprintf(stderr, "%s:%d bytes %llu wrapped, "
-			"return UINT64_MAX.\n", __func__, __LINE__);
+		fprintf(stderr, "%s:%d bytes %"PRIu64" wrapped, "
+			"return UINT64_MAX.\n", __func__, __LINE__, bytes);
 		ret = UINT64_MAX;
 	}
 
@@ -669,7 +709,6 @@ fill_defaults(State *s)
 	int sectsize;
 	uint64_t ret;
 	struct cmfs_cluster_group_sizes cgs;
-	uint64_t tmp;
 
 	pagesize = getpagesize();
 	s->pagesize_bits = get_bits(s, pagesize);
@@ -716,7 +755,7 @@ fill_defaults(State *s)
 		if (s->specified_size_in_blocks &&
 		    (s->specified_size_in_blocks > s->volume_size_in_blocks)) {
 			com_err(s->progname, 0,
-				"%"PRIu64"blocks were specified and "
+				"%"PRIu64" blocks were specified and "
 				"this is greater than the %"PRIu64" "
 				"blocks that make up %s.\n",
 				s->specified_size_in_blocks,
@@ -757,7 +796,7 @@ fill_defaults(State *s)
 	s->tail_group_bits = cgs.cgs_tail_group_bits;
 
 	if (1) {
-		fprintf(stderr, "volume_size_in_clusters = %u\n", s->volume_size_in_clusters);
+		fprintf(stderr, "volume_size_in_clusters = %"PRIu64"\n", s->volume_size_in_clusters);
 		fprintf(stderr, "global_cgp = %u\n", s->global_cpg);
 		fprintf(stderr, "nr_cluster_groups = %u\n", s->nr_cluster_groups);
 		fprintf(stderr, "tail_group_bits = %u\n", s->tail_group_bits);
@@ -1028,7 +1067,7 @@ static AllocBitmap *initialize_bitmap(State *s,
 	/* by now, this should be accurate */
 	if (bm_record->bi.total_bits != s->volume_size_in_clusters) {
 		fprintf(stderr, "bitmap total and num clusters don't match!"
-				" %u, %u\n",
+				" %u, %"PRIu64"\n",
 				bm_record->bi.total_bits,
 				s->volume_size_in_clusters);
 		exit(1);
@@ -1101,7 +1140,7 @@ int main(int argc, char **argv)
 	int i, j, num;
 	DirData *root_dir;
 	DirData *system_dir;
-	DirData *orphan_dir;
+//	DirData *orphan_dir;
 	SystemFileDiskRecord *tmprec;
 	char fname[SYSTEM_FILE_NAME_MAX];
 	uint64_t need;
@@ -1311,7 +1350,7 @@ int main(int argc, char **argv)
 	block_signals(SIG_BLOCK);
 	format_leading_space(s);
 	format_superblock(s, &superblock_rec, &root_dir_rec, &system_dir_rec);
-	block_signal(SIG_UNBLOCK);
+	block_signals(SIG_UNBLOCK);
 
 	if (!s->quiet)
 		printf("done\n");
