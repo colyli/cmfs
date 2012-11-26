@@ -152,6 +152,7 @@ struct cmfs_dir_block_trailer *cmfs_dir_trailer_from_block(cmfs_filesys *fs,
 errcode_t cmfs_swap_dir_entries_from_cpu(void *buf, uint64_t bytes);
 errcode_t cmfs_swap_dir_entries_to_cpu(void *buf, uint64_t bytes);
 void cmfs_swap_dir_trailer(struct cmfs_dir_block_trailer *trailer);
+unsigned int cmfs_dir_trailer_blk_off(cmfs_filesys *fs);
 errcode_t io_set_blksize(io_channel *channel, int blksize);
 int cmfs_supports_dir_trailer(cmfs_filesys *fs);
 errcode_t cmfs_open(const char *name,
@@ -171,11 +172,16 @@ errcode_t cmfs_malloc_blocks(io_channel *channel, int num_blocks, void *ptr);
 errcode_t cmfs_malloc_block(io_channel *channel, void *ptr);
 errcode_t cmfs_free(void *ptr);
 int io_get_blksize(io_channel *channel);
+errcode_t cmfs_get_device_size(const char *file,
+			       int blocksize,
+			       uint64_t *retblocks);
+errcode_t cmfs_get_device_sectsize(const char *file, int *sectsize);
 errcode_t io_read_block_nocache(io_channel *channel,
 				int64_t blkno,
 				int count,
 				char *data);
 void cmfs_swap_inode_to_cpu(cmfs_filesys *fs, struct cmfs_dinode *di);
+void cmfs_swap_inode_from_cpu(cmfs_filesys *fs, struct cmfs_dinode *di);
 errcode_t io_open(const char *name, int flags, io_channel **channel);
 int io_is_device_readonly(io_channel *channel);
 errcode_t io_read_block(io_channel *channel,
@@ -186,7 +192,9 @@ errcode_t io_close(io_channel *channel);
 void cmfs_swap_extent_list_to_cpu(cmfs_filesys *fs,
 				  void *obj,
 				  struct cmfs_extent_list *el);
-
+void cmfs_swap_extent_list_from_cpu(cmfs_filesys *fs,
+				    void *obj,
+				    struct cmfs_extent_list *el);
 
 
 
