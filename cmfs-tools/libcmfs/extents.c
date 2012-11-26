@@ -68,6 +68,17 @@ static void cmfs_swap_extent_list_secondary(cmfs_filesys *fs,
 	}
 }
 
+void cmfs_swap_extent_list_from_cpu(cmfs_filesys *fs,
+				    void *obj,
+				    struct cmfs_extent_list *el)
+{
+	if (cpu_is_little_endian)
+		return;
+
+	cmfs_swap_extent_list_secondary(fs, obj, el);
+	cmfs_swap_extent_list_primary(el);
+}
+
 void cmfs_swap_extent_list_to_cpu(cmfs_filesys *fs,
 				  void *obj,
 				  struct cmfs_extent_list *el)
