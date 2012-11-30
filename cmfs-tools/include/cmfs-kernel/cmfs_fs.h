@@ -58,6 +58,9 @@
 #define CMFS_VOL_UUID_LEN		 16
 #define CMFS_MAX_FILENAME_LEN		255
 
+/* Slot map indicator for an empty slot */
+#define CMFS_INVALID_SLOT		-1
+
 /*
  * Min block size = Max block size = 4KB
  * Min cluster size: 4KB
@@ -71,8 +74,13 @@
 #define CMFS_MAX_BLOCKSIZE		CMFS_MIN_CLUSTERSIZE
 #define CMFS_MIN_BLOCKSIZE		CMFS_MAX_BLOCKSIZE
 
+/* Signature strings */
 #define CMFS_SUPER_BLOCK_SIGNATURE	"CMFSV1"
+#define CMFS_INODE_SIGNATURE		"INODE01"
+#define CMFS_EXTENT_BLOCK_SIGNATURE	"EXBLK01"
 #define CMFS_GROUP_DESC_SIGNATURE	"GROUP01"
+#define CMFS_DIR_TRAILER_SIGNATURE	"DIRTRL1"
+
 /*
  * Flags on cmfs_dinode.i_flags
  */
@@ -119,6 +127,26 @@
 
 #define CMFS_FT_MAX		8
 
+/*
+ * Directory entry related stuffs
+ *
+ * CMFS_DIR_PAD defines the directory entries boundaries
+ * Note: it must be a multiple of 4
+ */
+#define CMFS_DIR_PAD			4
+#define CMFS_DIR_ROUND			(CMFS_DIR_PAD - 1)
+#define CMFS_DIR_MEMBER_LEN		offsetof(struct cmfs_dir_entry, name)
+#define CMFS_DIR_REC_LEN(name_len)	(((name_len) + CMFS_DIR_MEMBER_LEN + \
+					  CMFS_DIR_ROUND) & \
+					 ~CMFS_DIR_ROUND)
+#define CMFS_DIR_MIN_REC_LEN		CMFS_DIR_REC_LEN(1)
+
+#define CMFS_LINK_MAX		32000
+#define CMFS_DX_LINK_MAX	((1U<<31) - 1U)
+#define CMFS_LINKS_HI_SHIFT	16
+#define CMFS_DX_ENTRIES_MAX	(0xffffffffU)
+
+
 
 #define CMFS_RAW_SB(dinode)	(&((dinode)->id2.i_super))
 #define CMFS_HAS_COMPAT_FEATURE(sb, mask) \
@@ -135,7 +163,6 @@
 #define CMFS_FEATURE_COMPAT_UNWRITTEN		0x0040
 #define CMFS_FEATURE_COMPAT_TUNEFS_INPROG	0x0080
 #define CMFS_FEATURE_COMPAT_RESIZE_INPROG	0x0100
-
 
 
 
@@ -361,7 +388,8 @@ struct cmfs_dinode {
 /*88*/ struct cmfs_block_check i_check;
 /*90*/	__le16 i_dyn_features;
 	__le16 i_xattr_inline_size;
-	__le32 i_reserved1[1];
+	__le16 i_suballoc_bit;	/* XXX: will move it to the location after i_suballoc_slot */
+	__le16 i_reserved1[1];
 /*98*/	union {
 		__le64 i_pad1;
 		struct {
@@ -491,9 +519,35 @@ static inline int cmfs_max_inline_data(int blocksize,
 		offsetof(struct cmfs_dinode, id2.i_data.id_data));
 }
 
+static inline int cmfs_local_alloc_size(int blocksize)
+{
+	int size;
 
+	size = blocksize -
+		offsetof(struct cmfs_dinode, id2.i_lab.la_bitmap);
 
+	return size;
+}
 
+static inline int cmfs_truncate_recs_per_inode(int blocksize)
+{
+	int size;
+
+	size = blocksize -
+		offsetof(struct cmfs_dinode, id2.i_dealloc.tl_recs);
+
+	return (size / sizeof(struct cmfs_truncate_rec));
+}
+
+static inline int cmfs_extent_recs_per_inode(int blocksize)
+{
+	int size;
+
+	size = blocksize -
+		offsetof(struct cmfs_dinode, id2.i_list.l_recs);
+
+	return size / (sizeof(struct cmfs_extent_rec));
+}
 
 
 
