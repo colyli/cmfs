@@ -36,6 +36,7 @@
 #include <signal.h>
 #include <uuid/uuid.h>
 #include <ctype.h>
+#include <malloc.h>
 
 
 #include <cmfs/cmfs.h>
@@ -184,6 +185,26 @@ static void mkfs_swap_inode_from_cpu(State *s,
 
 	fill_fake_fs(s, &fake_fs, super_buf);
 	cmfs_swap_inode_from_cpu(&fake_fs, di);
+}
+
+static void mkfs_swap_group_desc_from_cpu(State *s,
+					  struct cmfs_group_desc *gd)
+{
+	cmfs_filesys fake_fs;
+	char super_buf[CMFS_MAX_BLOCKSIZE];
+
+	fill_fake_fs(s, &fake_fs, super_buf);
+	cmfs_swap_group_desc_from_cpu(&fake_fs, gd);
+}
+
+static void mkfs_swap_group_desc_to_cpu(State *s,
+					struct cmfs_group_desc *gd)
+{
+	cmfs_filesys fake_fs;
+	char super_buf[CMFS_MAX_BLOCKSIZE];
+
+	fill_fake_fs(s, &fake_fs, super_buf);
+	cmfs_swap_group_desc_to_cpu(&fake_fs, gd);
 }
 
 /* XXX: not implemented yet */
@@ -611,7 +632,9 @@ get_state(int argc, char **argv)
 	s->fd			= -1;
 	s->format_time		= time(NULL);
 	s->journal_size_in_bytes= journal_size_in_bytes;
-
+	/* XXX: intial_slots may be assigned to number of CPUs
+	 * in future. */
+	s->initial_slots	= 1;
 
 	if (!uuid) {
 		fprintf(stderr, "%s:%d no uuid specified, generate uuid.\n",
@@ -710,6 +733,8 @@ fill_defaults(State *s)
 	uint64_t ret;
 	struct cmfs_cluster_group_sizes cgs;
 
+	blocksize = CMFS_MAX_BLOCKSIZE;
+
 	pagesize = getpagesize();
 	s->pagesize_bits = get_bits(s, pagesize);
 
@@ -797,7 +822,7 @@ fill_defaults(State *s)
 
 	if (1) {
 		fprintf(stderr, "volume_size_in_clusters = %"PRIu64"\n", s->volume_size_in_clusters);
-		fprintf(stderr, "global_cgp = %u\n", s->global_cpg);
+		fprintf(stderr, "global_cpg = %u\n", s->global_cpg);
 		fprintf(stderr, "nr_cluster_groups = %u\n", s->nr_cluster_groups);
 		fprintf(stderr, "tail_group_bits = %u\n", s->tail_group_bits);
 	}
@@ -1096,6 +1121,172 @@ static void clear_both_ends(State *s)
 	free(buf);
 }
 
+/*
+ * find num_bits continous clear bits in bitmap
+ */
+static int find_clear_bits(void *buf,
+			   unsigned int size,
+			   uint32_t num_bits,
+			   uint32_t offset)
+{
+	uint32_t next_zero, off, count = 0, first_zero = -1;
+
+	off = offset;
+
+	/*
+	 * if next_zero >= size, it means exceed buf size
+	 */
+	while((size - off + count) >= num_bits) {
+	      next_zero = cmfs_find_next_bit_clear(buf, size, off);
+		if (next_zero >= size)
+			break;
+
+		if (next_zero != off) {
+			first_zero = next_zero;
+			off = next_zero + 1;
+			count = 0;
+		} else {
+			off ++;
+			if (count == 0)
+				first_zero = next_zero;
+		}
+		count ++;
+		if (count == num_bits)
+			goto bail;
+	}
+	first_zero = -1;
+bail:
+	if (first_zero != -1 &&
+	    first_zero >= size) {
+		fprintf(stderr, "first_zero > bitmap->valid_bits"
+			" (%d > %d)", first_zero, size);
+		first_zero = -1;
+	}
+
+	return first_zero;
+}
+
+static int alloc_from_bitmap(State *s,
+			     uint64_t num_bits,
+			     AllocBitmap *bitmap,
+			     uint64_t *start,
+			     uint64_t *num)
+{
+	uint32_t start_bit = -1;
+	void *buf = NULL;
+	int i, found, chain;
+	AllocGroup *group;
+	struct cmfs_group_desc *gd = NULL;
+	unsigned int size;
+
+	found = 0;
+	for (i = 0; i < bitmap->num_chains && (!found); i++)
+	{
+		group = bitmap->groups[i];
+		do {
+			gd = group->gd;
+			if (gd->bg_free_bits_count >= num_bits) {
+				buf = gd->bg_bitmap;
+				size = gd->bg_bits;
+				start_bit = find_clear_bits(buf,
+							    size,
+							    num_bits,
+							    0);
+				if (start_bit != -1)
+					found = 1;
+				break;
+			}
+			group = group->next;
+		}while (group);
+	}
+
+	if (!found) {
+		com_err(s->progname, 0,
+			"Could not allocate %"PRIu64" bits from %s bitmap",
+			num_bits, bitmap->name);
+		exit(1);
+	}
+
+	/*
+	 * gd->bg_blkno is the location where a group desc is stored
+	 * on disk, except for first block group. Therefore we should
+	 * treat first block group differently.
+	 */
+	if (gd->bg_blkno == s->first_cluster_group_blkno)
+		*start = (uint64_t) start_bit;
+	else
+		*start = (uint64_t) start_bit +
+			((gd->bg_blkno << s->blocksize_bits) >> s->cluster_size_bits);
+
+	*start = (*start) << bitmap->unit_bits;
+	*num = ((uint64_t) num_bits) << bitmap->unit_bits;
+	gd->bg_free_bits_count -= num_bits;
+	chain = gd->bg_chain;
+	bitmap->groups[chain]->chain_free -= num_bits;
+	bitmap->bm_record->bi.used_bits += num_bits;
+
+	while (num_bits --) {
+		cmfs_set_bit(start_bit, buf);
+		start_bit ++;
+	};
+
+	return 0;
+}
+
+static int alloc_bytes_from_bitmap(State *s,
+				   uint64_t bytes,
+				   AllocBitmap *bitmap,
+				   uint64_t *start,
+				   uint64_t *num)
+{
+	uint32_t num_bits = 0;
+
+	num_bits = (bytes + bitmap->unit - 1) >> bitmap->unit_bits;
+	return alloc_from_bitmap(s, num_bits, bitmap, start, num);
+}
+
+/*
+ * XXX: Currently s->initial_slots is 1, later we will think of assign it to
+ * the number of CPUs
+ */
+static uint32_t sys_blocks_needed(uint32_t num_slots)
+{
+	uint32_t i, num = 0;
+	uint32_t cnt = sizeof(system_files) / sizeof(SystemFileInfo);
+
+	for (i = 0; i < cnt; i++) {
+		if (system_files[i].global)
+			num++;
+		else
+			num += num_slots;
+	}
+	return num;
+}
+
+static uint32_t blocks_needed(State *s)
+{
+	uint32_t num;
+
+	num = SUPERBLOCK_BLOCKS;
+	num += ROOTDIR_BLOCKS;
+	num += SYSDIR_BLOCKS;
+	num += LOSTDIR_BLOCKS;
+	num += sys_blocks_needed(MAX(32, s->initial_slots));
+
+	return num;
+}
+
+static uint32_t system_dir_blocks_needed(State *s)
+{
+	int each = CMFS_DIR_REC_LEN(SYSTEM_FILE_NAME_MAX);
+	int entries_per_block = s->blocksize / each;
+	int cnt;
+
+	cnt = sys_blocks_needed(s->initial_slots);
+	cnt = (cnt + entries_per_block - 1) / entries_per_block;
+	return cnt;
+}
+
 static void init_record(State *s,
 			SystemFileDiskRecord *rec,
 			int type,
@@ -1127,6 +1318,318 @@ static void init_record(State *s,
 	default:
 		break;
 	};
+}
+
+static void mkfs_init_dir_trailer(State *s, DirData *dir, void *buf)
+{
+	char super_buf[CMFS_MAX_BLOCKSIZE];
+	cmfs_filesys fake_fs;
+	struct cmfs_dir_entry *de;
+	struct cmfs_dinode fake_di = {
+		.i_blkno = dir->record->fe_off >> s->blocksize_bits,
+	};
+	uint64_t blkno = dir->record->extent_off;
+
+	/* Find out how far we are in our directory */
+	blkno += ((char *)buf) - ((char *)dir->buf);
+	blkno >>= s->blocksize_bits;
+
+	fill_fake_fs(s, &fake_fs, super_buf);
+
+	if (cmfs_supports_dir_trailer(&fake_fs)) {
+		de = buf;
+		de->rec_len = cmfs_dir_trailer_blk_off(&fake_fs);
+		cmfs_init_dir_trailer(&fake_fs, &fake_di, blkno, buf);
+	}
+}
+
+
+static void add_entry_to_directory(State *s,
+				   DirData *dir,
+				   char *name,
+				   uint64_t byte_off,
+				   uint8_t type)
+{
+	struct cmfs_dir_entry *de, *de1;
+	int new_rec_len;
+	void *new_buf, *p;
+	int new_size, rec_len, real_len;
+
+	new_rec_len = CMFS_DIR_REC_LEN(strlen(name));
+
+	if (dir->buf) {
+		de = (struct cmfs_dir_entry *)(dir->buf + dir->last_off);
+		rec_len = de->rec_len;
+		real_len = CMFS_DIR_REC_LEN(de->name_len);
+
+		if ((de->inode == 0 && rec_len >= new_rec_len) ||
+		    (rec_len >= real_len + new_rec_len)) {
+			if (de->inode) {
+				de1 = (struct cmfs_dir_entry *)
+					((char *)de + real_len);
+				de1->rec_len = de->rec_len - real_len;
+				de->rec_len = real_len;
+				de = de1;
+			}
+			goto got_it;
+		}
+		new_size = dir->record->file_size + s->blocksize;
+	} else {
+		new_size = s->blocksize;
+	}
+
+	new_buf = memalign(s->blocksize, new_size);
+	if (new_buf == NULL) {
+		com_err(s->progname, 0, "Failed to grow directory");
+		exit(1);
+	}
+
+	if (dir->buf) {
+		memcpy(new_buf, dir->buf, dir->record->file_size);
+		free(dir->buf);
+		p = new_buf + dir->record->file_size;
+		memset(p, 0, new_size - dir->record->file_size);
+	} else {
+		p = new_buf;
+		memset(p, 0, new_size);
+	}
+
+	dir->buf = new_buf;
+	dir->record->file_size = new_size;
+
+	de = (struct cmfs_dir_entry *)p;
+	de->inode = 0;
+	de->rec_len = s->blocksize;
+	/* if not inline, add dir trailer */
+	if (!s->inline_data || !dir->record->dir_data)
+		mkfs_init_dir_trailer(s, dir, p);
+
+got_it:
+	de->name_len = strlen(name);
+	de->inode = byte_off >> s->blocksize_bits;
+	de->file_type = type;
+	strcpy(de->name, name);
+	dir->last_off = ((char *)de - (char *)dir->buf);
+
+	if (type == CMFS_FT_DIR)
+		dir->record->links ++;
+
+	return;
+}
+
+/* XXX: Dont understand why hard code megabytes */
+static int
+cmfs_clusters_per_group(int block_size, int cluster_size_bits)
+{
+	return 4;
+}
+
+static void mkfs_set_rec_clusters(State *s,
+				  uint16_t tree_depth,
+				  struct cmfs_extent_rec *rec,
+				  uint32_t clusters)
+{
+	cmfs_filesys fake_fs;
+	char super_buf[CMFS_MAX_BLOCKSIZE];
+
+	fill_fake_fs(s, &fake_fs, super_buf);
+	cmfs_set_rec_clusters(&fake_fs, 0, rec, clusters);
+}
+
+static void format_file(State *s, SystemFileDiskRecord *rec)
+{
+	struct cmfs_dinode *di;
+	int i;
+	uint32_t clusters;
+	AllocBitmap *bitmap;
+
+	clusters = (rec->extent_len + s->cluster_size - 1) >>
+		   s->cluster_size_bits;
+
+	di = do_malloc(s, s->blocksize);
+	memset(di, 0, s->blocksize);
+
+	strcpy((char *)di->i_signature, CMFS_INODE_SIGNATURE);
+	di->i_generation = s->vol_generation;
+	di->i_fs_generation = s->vol_generation;
+	di->i_suballoc_slot = (uint16_t)CMFS_INVALID_SLOT;
+	di->i_suballoc_bit = rec->suballoc_bit;
+	di->i_blkno = rec->fe_off >> s->blocksize_bits;
+	di->i_uid = 0;
+	di->i_gid = 0;
+	di->i_size = rec->file_size;
+	di->i_mode = rec->mode;
+	di->i_links_count = rec->links;
+	di->i_flags = rec->flags;
+	di->i_atime = di->i_ctime = di->i_mtime = s->format_time;
+	di->i_dtime = 0;
+	di->i_clusters = clusters;
+
+	if (rec->flags & CMFS_LOCAL_ALLOC_FL) {
+		di->id2.i_lab.la_size =
+			cmfs_local_alloc_size(s->blocksize);
+		goto write_out;
+	}
+	
+	if (rec->flags & CMFS_DEALLOC_FL) {
+		di->id2.i_dealloc.tl_count =
+			cmfs_truncate_recs_per_inode(s->blocksize);
+		goto write_out;
+	}
+
+	if (rec->flags & CMFS_BITMAP_FL) {
+		di->id1.bitmap1.i_used = rec->bi.used_bits;
+		di->id1.bitmap1.i_total = rec->bi.total_bits;
+	}
+
+	if (rec->cluster_bitmap) {
+		di->id2.i_chain.cl_count =
+			cmfs_chain_recs_per_inode(s->blocksize);
+		di->id2.i_chain.cl_cpg =
+			cmfs_group_bitmap_size(s->blocksize, 0, 0) * 8;;
+		di->id2.i_chain.cl_bpc = 1;
+		/* XXX: why set cl_next_free_rec this way ? */
+		if (s->nr_cluster_groups >
+		    cmfs_chain_recs_per_inode(s->blocksize))
+			di->id2.i_chain.cl_next_free_rec =
+				di->id2.i_chain.cl_count;
+		else
+			di->id2.i_chain.cl_next_free_rec =
+				s->nr_cluster_groups;
+		di->i_clusters = s->volume_size_in_clusters;
+
+		bitmap = rec->bitmap;
+		for (i = 0; i < bitmap->num_chains; i++) {
+			di->id2.i_chain.cl_recs[i].c_blkno =
+				bitmap->groups[i]->gd->bg_blkno;
+			di->id2.i_chain.cl_recs[i].c_free =
+				bitmap->groups[i]->gd->bg_bits;
+			di->id2.i_chain.cl_recs[i].c_total =
+				bitmap->groups[i]->chain_total;
+		}
+		goto write_out;
+	}
+
+	if (rec->flags & CMFS_CHAIN_FL) {
+		di->id2.i_chain.cl_count =
+			cmfs_chain_recs_per_inode(s->blocksize);
+		di->id2.i_chain.cl_cpg =
+			cmfs_clusters_per_group(s->blocksize,
+						s->cluster_size_bits);
+		di->id2.i_chain.cl_bpc = s->cluster_size / s->blocksize;
+		di->id2.i_chain.cl_next_free_rec = 1;
+
+		if (rec->chain_off) {
+			di->id2.i_chain.cl_next_free_rec = 1;
+			di->id2.i_chain.cl_recs[0].c_free =
+				rec->group->gd->bg_free_bits_count;
+			di->id2.i_chain.cl_recs[0].c_total =
+				rec->group->gd->bg_bits;
+			di->id2.i_chain.cl_recs[0].c_blkno =
+				rec->chain_off >> s->blocksize_bits;
+			di->id2.i_chain.cl_cpg =
+				rec->group->gd->bg_bits /
+				di->id2.i_chain.cl_bpc;
+			di->i_clusters = di->id2.i_chain.cl_cpg;
+			di->i_size = di->i_clusters << s->cluster_size_bits;
+		}
+		goto write_out;
+	}
+	di->id2.i_list.l_count = cmfs_extent_recs_per_inode(s->blocksize);
+	di->id2.i_list.l_next_free_rec = 0;
+	di->id2.i_list.l_tree_depth = 0;
+
+	if (rec->extent_len) {
+		di->id2.i_list.l_next_free_rec = 1;
+		di->id2.i_list.l_recs[0].e_cpos = 0;
+		mkfs_set_rec_clusters(s,
+				      0,
+				      &di->id2.i_list.l_recs[0],
+				      clusters);
+		di->id2.i_list.l_recs[0].e_blkno =
+			rec->extent_off >> s->blocksize_bits;
+	} else if (S_ISDIR(di->i_mode) &&
+		   s->inline_data && rec->dir_data) {
+		DirData *dir = rec->dir_data;
+		struct cmfs_dir_entry *de =
+			(struct cmfs_dir_entry *)(dir->buf + dir->last_off);
+		int dir_len = dir->last_off + CMFS_DIR_REC_LEN(de->name_len);
+
+		if (dir_len >
+		    cmfs_max_inline_data(s->blocksize, di)) {
+			com_err(s->progname, 0,
+				"Inline a dir which should not be inlien.\n");
+			clear_both_ends(s);
+			exit(1);
+		}
+		de->rec_len -= s->blocksize -
+			cmfs_max_inline_data(s->blocksize, di);
+		memset(&di->id2, 0,
+			s->blocksize - offsetof(struct cmfs_dinode, id2));
+
+		di->id2.i_data.id_count =
+			cmfs_max_inline_data(s->blocksize, di);
+		memcpy(di->id2.i_data.id_data, dir->buf, dir_len);
+		di->i_dyn_features |= CMFS_INLINE_DATA_FL;
+		di->i_size = cmfs_max_inline_data(s->blocksize, di);
+	}
+
+write_out:
+	mkfs_swap_inode_from_cpu(s, di);
+	mkfs_compute_meta_ecc(s, di, &di->i_check);
+	do_pwrite(s, di, s->blocksize, rec->fe_off);
+	free(di);
+}
+
+/* Currently we dont skip any feature bit */
+static int feature_skip(State *s, int system_inode)
+{
+	return 0;
+}
+
+static void write_bitmap_data(State *s, AllocBitmap *bitmap)
+{
+	int i;
+	uint64_t parent_blkno;
+	struct cmfs_group_desc *gd, *gd_buf;
+	char *buf = NULL;
+
+	buf = do_malloc(s, s->cluster_size);
+	memset(buf, 0, s->cluster_size);
+
+	parent_blkno = bitmap->bm_record->fe_off >> s->blocksize_bits;
+	for (i = 0; i < s->nr_cluster_groups; i++) {
+		gd = bitmap->groups[i]->gd;
+		if (strcmp((char *)gd->bg_signature,
+			   CMFS_GROUP_DESC_SIGNATURE)) {
+			fprintf(stderr, "bad group descriptor\n");
+			exit(1);
+		}
+		/*
+		 * OK, we didn't get a chance to fill in the parent
+		 * blkno until now.
+		 */
+		gd->bg_parent_dinode = parent_blkno;
+		memcpy(buf, gd, s->blocksize);
+		gd_buf = (struct cmfs_group_desc *)buf;
+		mkfs_swap_group_desc_from_cpu(s, gd_buf);
+		mkfs_compute_meta_ecc(s, buf, &gd_buf->bg_check);
+		do_pwrite(s,
+			  buf,
+			  s->cluster_size,
+			  gd->bg_blkno << s->blocksize_bits);
+	}
+	free(buf);
+}
+
+static void write_group_data(State *s, AllocGroup *group)
+{
+	uint64_t blkno;
+	blkno = group->gd->bg_blkno;
+	mkfs_swap_group_desc_from_cpu(s, group->gd);
+	mkfs_compute_meta_ecc(s, group->gd, &group->gd->bg_check);
+	do_pwrite(s, group->gd, s->blocksize, blkno << s->blocksize_bits);
+	mkfs_swap_group_desc_to_cpu(s, group->gd);
 }
 
 int main(int argc, char **argv)
@@ -1199,9 +1702,8 @@ int main(int argc, char **argv)
 	init_record(s, &system_dir_rec, SFI_OTHER, S_IFDIR | 0755);
 
 
-	/* currently system_files[i].nr is 1 */
-	for (i = 0; i < NUM_SYSTEM_INODES; i++) {
-		num = system_files[i].global ? 1 : CMFS_PER_CPU_NUM;
+	for (i = 0; i < s->initial_slots; i++) {
+		num = system_files[i].global ? 1 : s->initial_slots; 
 		record[i] = do_malloc(s, sizeof(SystemFileDiskRecord) * num);
 
 		for (j = 0; j < num; j ++)
@@ -1211,7 +1713,7 @@ int main(int argc, char **argv)
 
 	root_dir = alloc_directory(s);
 	system_dir = alloc_directory(s);
-	orphan_dir = alloc_directory(s);
+//	orphan_dir = alloc_directory(s);
 
 
 	/* how many bytes needed for global bitmap */
@@ -1274,7 +1776,7 @@ int main(int argc, char **argv)
 	add_entry_to_directory(s, root_dir, "..", root_dir_rec.fe_off, CMFS_FT_DIR);
 
 	need = system_dir_blocks_needed(s) << s->blocksize_bits;
-	alloc_bytes_form_bitmap(s, need, s->global_bm,
+	alloc_bytes_from_bitmap(s, need, s->global_bm,
 				&system_dir_rec.extent_off,
 				&system_dir_rec.extent_len);
 	system_dir_rec.dir_data = NULL;
@@ -1289,7 +1791,7 @@ int main(int argc, char **argv)
 		if (feature_skip(s, i))
 			continue;
 
-		num = system_files[i].global ? 1: CMFS_PER_CPU_NUM;
+		num = system_files[i].global ? 1: s->initial_slots;
 		for (j = 0; j < num; j++) {
 			record[i][j].fe_off = alloc_inode(s, &(record[i][j].suballoc_bit));
 			sprintf(fname, system_files[i].name, j);
@@ -1322,7 +1824,7 @@ int main(int argc, char **argv)
 		if (feature_skip(s, i))
 			continue;
 
-		num = system_files[i].global ? 1: CMFS_PER_CPU_NUM;
+		num = system_files[i].global ? 1: s->initial_slots;
 		for (j = 0; j < num; j++) {
 			tmprec = &(record[i][j]);
 			format_file(s, tmprec);
@@ -1336,7 +1838,7 @@ int main(int argc, char **argv)
 	format_file(s, tmprec);
 
 	write_bitmap_data(s, s->global_bm);
-	write_group_data(s->system_group);
+	write_group_data(s, s->system_group);
 	write_directory_data(s, root_dir);
 	write_directory_data(s, system_dir);
 
