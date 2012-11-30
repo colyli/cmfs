@@ -22,6 +22,9 @@ rm -rf mkfs.cmfs/.deps/
 rm -rf mkfs.cmfs/Makefile
 rm -rf mkfs.cmfs/Makefile.in
 rm -rf mkfs.cmfs/*.o
+rm -rf mkfs.cmfs/mkfs.cmfs
 rm -rf misc/.deps
 rm -rf misc/Makefile
 rm -rf misc/Makefile.in
+rm -rf misc/member_offset
+rm -rf misc/member_offset.o
