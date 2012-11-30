@@ -27,6 +27,10 @@
 #include <unistd.h>
 #include <sys/types.h>
 
+#ifndef MAX
+# define MAX(a, b) ((a) > (b) ? (a) : (b))
+#endif
+
 #define CMFS_DFL_MAX_MNT_COUNT		48
 #define CMFS_DFL_CHECKINTERVAL		0
 
@@ -36,18 +40,12 @@
 #define CMFS_OS_MINIX			3
 #define CMFS_OS_MLXOS			4
 
-
-
-
-
-/*
- * backup superblock flag is used to indicate that this volume
- * has backup superblocks
- */
-#define CMFS_FEATURE_COMPAT_BACKUP_SB		0x0001
+#define SUPERBLOCK_BLOCKS	3
+#define ROOTDIR_BLOCKS		1
+#define SYSDIR_BLOCKS		1
+#define LOSTDIR_BLOCKS		1
 
 #define CLEAR_CHUNK	(1<<20)
-
 
 /* Journal limits (in bytes) */
 #define CMFS_MIN_JOURNAL_SIZE	(4 * (1<<20))
@@ -106,6 +104,7 @@ struct _State {
 	int inline_data;
 	int dx_dirs;
 	int dry_run;
+	int initial_slots;
 
 	uint32_t blocksize;
 	uint32_t blocksize_bits;
@@ -162,9 +161,9 @@ struct BitInfo {
 };
 
 struct _SystemFileDiskRecord {
-	uint64_t fe_off;
+	uint64_t fe_off;	/* for inode */
 	uint16_t suballoc_bit;
-	uint64_t extent_off;
+	uint64_t extent_off;	/* for data */
 	uint64_t extent_len;
 	uint64_t file_size;	/* <= extent_len */
 
