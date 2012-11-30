@@ -1,5 +1,9 @@
+#include <string.h>
+
+
 #include <cmfs/bitmap.h>
 #include <cmfs/cmfs.h>
+#include <cmfs-kernel/cmfs_fs.h>
 #include <cmfs/byteorder.h>
 
 #include "cmfs_err.h"
@@ -35,6 +39,32 @@ void cmfs_swap_dir_trailer(struct cmfs_dir_block_trailer *trailer)
 	trailer->db_parent_dinode = bswap_64(trailer->db_parent_dinode);
 	trailer->db_free_rec_len = bswap_16(trailer->db_free_rec_len);
 	trailer->db_free_next = bswap_64(trailer->db_free_next);
+}
+
+/*
+ * We are sure there is prepared space for the trailer, no directory
+ * entry will overlap with the trailer:
+ * - if we rebuild the indexed tree for a directory, no dir entry
+ *   will overwrite the trailer's space
+ * - if we build the indexed tree by tunefs.ocfs2, it will enable
+ *   meta ecc feature before enable indexed dirs feature. Which
+ *   means space for each trailer is well prepared already.
+ */
+void cmfs_init_dir_trailer(cmfs_filesys *fs,
+			   struct cmfs_dinode *di,
+			   uint64_t blkno,
+			   void *buf)
+{
+	struct cmfs_dir_block_trailer *trailer;
+
+	trailer = cmfs_dir_trailer_from_block(fs, buf);
+
+	memset(trailer, 0, sizeof(struct cmfs_dir_block_trailer));
+	memcpy(trailer->db_signature, CMFS_DIR_TRAILER_SIGNATURE,
+	       strlen(CMFS_DIR_TRAILER_SIGNATURE));
+	trailer->db_compat_rec_len = sizeof(struct cmfs_dir_block_trailer);
+	trailer->db_blkno = blkno;
+	trailer->db_parent_dinode = di->i_blkno;
 }
 
 /*
