@@ -146,9 +146,14 @@ struct cmfs_io_stats {
 	uint32_t is_cache_removes;
 };
 
+errcode_t cmfs_check_if_mounted(const char *file, int *mount_flags);
 void io_get_stats(io_channel *channel, struct cmfs_io_stats *stats);
 struct cmfs_dir_block_trailer *cmfs_dir_trailer_from_block(cmfs_filesys *fs,
 							   void  *data);
+void cmfs_init_dir_trailer(cmfs_filesys *fs,
+			   struct cmfs_dinode *di,
+			   uint64_t blkno,
+			   void *buf);
 errcode_t cmfs_swap_dir_entries_from_cpu(void *buf, uint64_t bytes);
 errcode_t cmfs_swap_dir_entries_to_cpu(void *buf, uint64_t bytes);
 void cmfs_swap_dir_trailer(struct cmfs_dir_block_trailer *trailer);
@@ -195,7 +200,10 @@ void cmfs_swap_extent_list_to_cpu(cmfs_filesys *fs,
 void cmfs_swap_extent_list_from_cpu(cmfs_filesys *fs,
 				    void *obj,
 				    struct cmfs_extent_list *el);
-
+void cmfs_swap_group_desc_from_cpu(cmfs_filesys *fs,
+				   struct cmfs_group_desc *gd);
+void cmfs_swap_group_desc_to_cpu(cmfs_filesys *fs,
+				   struct cmfs_group_desc *gd);
 
 
 
@@ -245,7 +253,17 @@ static inline int cmfs_swap_barrier(cmfs_filesys *fs,
 	return (end > limit);
 }
 
-
+static inline void cmfs_set_rec_clusters(cmfs_filesys *fs,
+				        uint16_t tree_depth,
+					struct cmfs_extent_rec *rec,
+					uint32_t clusters)
+{
+	if (tree_depth)
+		rec->e_int_clusters = clusters;
+	else
+		rec->e_leaf_blocks =
+			cmfs_clusters_to_blocks(fs, clusters);
+}
 
 
 
