@@ -280,7 +280,7 @@ write_metadata(State *s, SystemFileDiskRecord *rec, void *src)
 	buf = do_malloc(s, rec->extent_len);
 
 	if (!buf) {
-		fprintf(stderr, "%s:%d do_malloc failed.",
+		fprintf(stderr, "%s:%d: do_malloc failed.",
 			__func__, __LINE__);
 		exit(1);
 	}
@@ -521,7 +521,7 @@ get_state(int argc, char **argv)
 		progname = strdup("mkfs.cmfs");
 
 	if (!progname) {
-		fprintf(stderr, "%s:%d strdup failed.\n", __func__, __LINE__);
+		fprintf(stderr, "%s:%d: strdup failed.\n", __func__, __LINE__);
 		exit(1);
 	}
 
@@ -585,7 +585,7 @@ get_state(int argc, char **argv)
 		}
 	}
 	/* no device name (or optional fs size) */
-	if ((optind = argc) && !show_version)
+	if ((optind == argc) && !show_version)
 		usage(progname);
 
 
@@ -637,7 +637,7 @@ get_state(int argc, char **argv)
 	s->initial_slots	= 1;
 
 	if (!uuid) {
-		fprintf(stderr, "%s:%d no uuid specified, generate uuid.\n",
+		fprintf(stderr, "%s:%d: no uuid specified, generate uuid.\n",
 			__func__, __LINE__);
 		uuid_generate(s->uuid);
 	} else {
@@ -671,7 +671,7 @@ static uint64_t align_bytes_to_clusters_ceil(State *s,
 
 	/* deal with wrapping */
 	if (ret < bytes) {
-		fprintf(stderr, "%s:%d bytes %"PRIu64" wrapped, "
+		fprintf(stderr, "%s:%d: bytes %"PRIu64" wrapped, "
 			"return UINT64_MAX.\n", __func__, __LINE__, bytes);
 		ret = UINT64_MAX;
 	}
@@ -755,7 +755,7 @@ fill_defaults(State *s)
 
 
 	if (s->blocksize) {
-		fprintf(stderr, "%s:%d blocksize is fixed to 4KB.\n", __func__, __LINE__);
+		fprintf(stderr, "%s:%d: blocksize is fixed to 4KB.\n", __func__, __LINE__);
 		blocksize = s->blocksize;
 	}
 
@@ -777,25 +777,27 @@ fill_defaults(State *s)
 			exit(1);
 		}
 		s->volume_size_in_blocks = ret;
-		if (s->specified_size_in_blocks &&
-		    (s->specified_size_in_blocks > s->volume_size_in_blocks)) {
-			com_err(s->progname, 0,
-				"%"PRIu64" blocks were specified and "
-				"this is greater than the %"PRIu64" "
-				"blocks that make up %s.\n",
-				s->specified_size_in_blocks,
-				s->volume_size_in_blocks,
-				s->device_name);
-			exit(1);
+		if (s->specified_size_in_blocks) {
+			if (s->specified_size_in_blocks >
+			    s->volume_size_in_blocks) {
+				com_err(s->progname, 0,
+					"%"PRIu64" blocks were specified and "
+					"this is greater than the %"PRIu64" "
+					"blocks that make up %s.\n",
+					s->specified_size_in_blocks,
+					s->volume_size_in_blocks,
+					s->device_name);
+				exit(1);
+			}
+			s->volume_size_in_blocks = s->specified_size_in_blocks;
 		}
-		s->volume_size_in_blocks = s->specified_size_in_blocks;
 	}
 
 	s->volume_size_in_bytes = s->volume_size_in_blocks * blocksize;
 
 	/* XXX: will remove this in future */
 	if (s->blocksize != 4096) {
-		fprintf(stderr, "%s:%d s->blocksize is not 4096\n", __func__, __LINE__);
+		fprintf(stderr, "%s:%d: s->blocksize is not 4096\n", __func__, __LINE__);
 		exit(1);
 	}
 
