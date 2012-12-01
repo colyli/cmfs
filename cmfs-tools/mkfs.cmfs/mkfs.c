@@ -1102,11 +1102,58 @@ static AllocBitmap *initialize_bitmap(State *s,
 	return bitmap;
 }
 
+/* XXX: Dont understand why hard code megabytes */
+static int
+cmfs_clusters_per_group(int block_size, int cluster_size_bits)
+{
+	return 4;
+}
+
+static void cmfs_sprint_feature_flags(char *str,
+				      size_t size,
+				      cmfs_fs_options *flags)
+{
+	printf("%s:%d: not implemented yet.\n", __func__, __LINE__);
+}
 
 static void print_state(State *s)
 {
-	printf("print_state() not implemented yet.\n");
-	exit(1);
+	char buf[PATH_MAX] = "\0";
+	uint64_t extsize = 0;
+	uint32_t numgrps = 0;
+
+	if (s->quiet)
+		return;
+
+	if (s->extent_alloc_size_in_clusters) {
+		numgrps = s->extent_alloc_size_in_clusters/
+			cmfs_clusters_per_group(s->blocksize,
+						s->cluster_size_bits);
+		extsize = (uint64_t)s->extent_alloc_size_in_clusters *
+			s->cluster_size;
+	}
+
+	cmfs_sprint_feature_flags(buf, PATH_MAX, &s->feature_flags);
+
+	printf("Label: %s\n", s->vol_label);
+	printf("Features: %s", buf);
+	printf("Block size: %u (%u bits)\n",
+		s->blocksize, s->blocksize_bits);
+	printf("Cluster size: %u (%u bits)\n",
+		s->cluster_size, s->cluster_size_bits);
+	printf("Volume size: %"PRIu64" (%"PRIu64" clusters) (%"PRIu64" blocks)\n",
+		s->volume_size_in_bytes,
+		s->volume_size_in_clusters,
+		s->volume_size_in_blocks);
+	printf("Cluster groups: %u (tail covers %u clusters, "
+		"rest cover %u clusters)\n",
+		s->nr_cluster_groups,
+		s->tail_group_bits,
+		s->global_cpg);
+	printf("Extent allocator size: %"PRIu64" (%u groups)\n",
+		extsize, numgrps);
+	printf("Journal size: %"PRIu64"\n", s->journal_size_in_bytes);
+	printf("Allocator slots: %u\n", s->initial_slots);
 }
 
 static void clear_both_ends(State *s)
@@ -1417,13 +1464,6 @@ got_it:
 		dir->record->links ++;
 
 	return;
-}
-
-/* XXX: Dont understand why hard code megabytes */
-static int
-cmfs_clusters_per_group(int block_size, int cluster_size_bits)
-{
-	return 4;
 }
 
 static void mkfs_set_rec_clusters(State *s,
