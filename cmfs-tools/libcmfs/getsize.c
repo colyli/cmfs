@@ -53,7 +53,7 @@ errcode_t cmfs_get_device_size(const char *file, int blocksize,
 	    ioctl(fd, BLKGETSIZE64, &size64) >= 0) {
 		if ((sizeof(*retblocks) < sizeof(uint64_t)) &&
 		    ((size64 / blocksize) > 0xFFFFFFFF)) {
-			fprintf(stderr, "%s:%d size too big.\n", __func__, __LINE__);
+			fprintf(stderr, "%s:%d: size too big.\n", __func__, __LINE__);
 			rc = EFBIG;
 			goto out;
 		}
@@ -67,7 +67,7 @@ errcode_t cmfs_get_device_size(const char *file, int blocksize,
 		goto out;
 	}
 
-	fprintf(stderr, "%s:%d not get_device_size method supported.\n", __func__, __LINE__);
+	fprintf(stderr, "%s:%d: not get_device_size method supported.\n", __func__, __LINE__);
 	exit(1);
 
 out:
