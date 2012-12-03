@@ -956,7 +956,7 @@ static AllocGroup *initialize_alloc_group(State *s,
 	cmfs_set_bit(0, group->gd->bg_bitmap);
 	group->gd->bg_free_bits_count = group->gd->bg_bits - 1;
 
-	alloc_inode->bi.total_bits += group->gd->bg_bits - 1;
+	alloc_inode->bi.total_bits += group->gd->bg_bits;
 	alloc_inode->bi.used_bits ++;
 	group->alloc_inode = alloc_inode;
 
@@ -1744,7 +1744,7 @@ int main(int argc, char **argv)
 	init_record(s, &system_dir_rec, SFI_OTHER, S_IFDIR | 0755);
 
 
-	for (i = 0; i < s->initial_slots; i++) {
+	for (i = 0; i < NUM_SYSTEM_INODES; i++) {
 		num = system_files[i].global ? 1 : s->initial_slots; 
 		record[i] = do_malloc(s, sizeof(SystemFileDiskRecord) * num);
 
