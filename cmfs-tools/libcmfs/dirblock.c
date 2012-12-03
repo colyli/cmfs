@@ -122,7 +122,7 @@ static errcode_t cmfs_swap_dir_entries_direction(void *buf,
 
 		if (((name_len & 0xff) + DIRENT_HEADER_SIZE) > rec_len )
 			retval = CMFS_ET_DIR_CORRUPTED;
-		p += retval;
+		p += rec_len;
 	}
 	return retval;
 }
