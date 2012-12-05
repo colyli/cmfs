@@ -32,6 +32,7 @@ AC_FUNC_MALLOC
 AC_CHECK_FUNCS([getpagesize memset strchr strdup strerror strstr strtoull uname])
 
 AC_OUTPUT([Makefile
+	   libtools-internal/Makefile
 	   libcmfs/Makefile
 	   mkfs.cmfs/Makefile
 	   dumpcmfs/Makefile

@@ -1,1 +1,1 @@
-SUBDIRS = libcmfs mkfs.cmfs dumpcmfs misc
+SUBDIRS = libtools-internal libcmfs mkfs.cmfs dumpcmfs misc
