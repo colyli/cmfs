@@ -60,6 +60,7 @@
 
 /* Slot map indicator for an empty slot */
 #define CMFS_INVALID_SLOT		-1
+#define CMFS_MAX_SLOTS		255
 
 /*
  * Min block size = Max block size = 4KB
@@ -145,7 +146,6 @@
 #define CMFS_DX_LINK_MAX	((1U<<31) - 1U)
 #define CMFS_LINKS_HI_SHIFT	16
 #define CMFS_DX_ENTRIES_MAX	(0xffffffffU)
-
 
 
 #define CMFS_RAW_SB(dinode)	(&((dinode)->id2.i_super))
