@@ -1,30 +1,13 @@
 #!/bin/bash
 
-rm -rf INSTALL
-rm -rf Makefile
-rm -rf Makefile.in
-rm -rf aclocal.m4
-rm -rf autom4te.cache/
-rm -rf config.log
-rm -rf config.status
-rm -rf configure
-rm -rf include/stamp-h1
-rm -rf install-sh
-rm -rf libcmfs/.deps/
-rm -rf libcmfs/Makefile
-rm -rf libcmfs/Makefile.in
-rm -rf libcmfs/*.o
-rm -rf libcmfs/libcmfs.a
-rm -rf libcmfs/cmfs_err.c
-rm -rf libcmfs/cmfs_err.h
-rm -rf missing
-rm -rf mkfs.cmfs/.deps/
-rm -rf mkfs.cmfs/Makefile
-rm -rf mkfs.cmfs/Makefile.in
-rm -rf mkfs.cmfs/*.o
-rm -rf mkfs.cmfs/mkfs.cmfs
-rm -rf misc/.deps
-rm -rf misc/Makefile
-rm -rf misc/Makefile.in
-rm -rf misc/member_offset
-rm -rf misc/member_offset.o
+who=INSTALL
+who="$who Makefile Makefile.in aclocal.m4 autom4te.cache/ config.log config.status configure missing"
+who="$who include/stamp-h1 install-sh"
+who="$who libcmfs/.deps/ libcmfs/Makefile libcmfs/Makefile.in libcmfs/*.o libcmfs/libcmfs.a libcmfs/cmfs_err.c libcmfs/cmfs_err.h"
+who="$who mkfs.cmfs/.deps/ mkfs.cmfs/Makefile mkfs.cmfs/Makefile.in mkfs.cmfs/*.o mkfs.cmfs/mkfs.cmfs"
+who="$who misc/.deps misc/Makefile misc/Makefile.in misc/member_offset misc/member_offset.o"
+who="$who dumpcmfs/*.o dumpcmfs/Makefile dumpcmfs/Makefile.in dumpcmfs/.deps/"
+who="$who libtools-internal/libtools-internal.a libtools-internal/*.o libtools-internal/Makefile libtools-internal/Makefile.in libtools-internal/.deps"
+
+
+rm -rf $who
