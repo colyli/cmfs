@@ -27,10 +27,269 @@
 #include <signal.h>
 #include <getopt.h>
 #include <assert.h>
+#include <linux/limits.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
+#include <cmfs-kernel/kernel-list.h>
+#include <cmfs-kernel/cmfs_fs.h>
+#include <cmfs-kernel/cmfs_ioctl.h>
+#include <cmfs/cmfs.h>
+#include "dumpcmfs.h"
 
 static LIST_HEAD(dumpcmfs_op_task_list);
 static int dumpcmfs_op_task_count;
+
+static int dumpcmfs_get_fs_features()
+{
+
+}
+
+static int dumpcmfs_get_volinfo()
+{
+
+}
+
+static int dumpcmfs_get_mkfs()
+{
+
+}
+
+static int dumpcmfs_get_freeinode()
+{
+
+}
+
+static int ul_log2()
+{
+
+}
+
+static void dumpcmfs_update_freefrag_stats()
+{
+
+}
+
+static int dumpcmfs_scan_global_bitmap_chain()
+{
+
+}
+
+static int dumpcmfs_scan_global_bitmap()
+{
+
+}
+
+static int dumpcmfs_get_freefrag()
+{
+
+}
+
+static int figure_extents()
+{
+
+}
+
+static uint32_t clusters_in_bytes(uint32_t clustersize, uint32_t bytes)
+{
+	uint64_t ret = bytes + clustersize - 1;
+
+	if (ret < bytes)
+		return UINT64_MAX;
+
+	ret = ret >> ul_log2(clustersize);
+	if (ret > UINT32_MAX)
+		ret = UINT32_MAX;
+
+	return (uint32_t)ret;
+}
+
+static int do_fiemap(int fd, int flags, struct dumpcmfs_fiemap *cfp)
+{
+	char buf[4096];
+	int ret = 0, last = 0;
+	int cluster_shift = 0;
+	int count;
+	struct fiemap *fiemap = (struct fiemap *)buf;
+	struct fiemap_extent *fm_ext = &fiemap->fm_extents[0];
+	uint32_t num_extents = 0, extents_got = 0, i;
+	uint32_t prev_start = 0, prev_len = 0;
+	uint32_t start = 0, len = 0;
+
+	count = (sizeof(buf) - sizeof(struct fiemap)) /
+		sizeof(struct fiemap_extent);
+
+	if (cfp->clustersize)
+		cluster_shift = ul_log2(cfp->clustersize);
+
+	memset(fiemap, 0, sizeof(*fiemap));
+
+	ret = figure_extents(fd, &num_extents, 0);
+	if (ret)
+		return -1;
+
+	if (flags & FIEMAP_FLAG_XATTR)
+		fiemap->fm_flags = FIEMAP_FLAG_XATTR;
+	else
+		fiemap->fm_flags = flags;
+
+	do {
+		fiemap->fm_length = ~0ULL;
+		fiemap->fm_extent_count = count;
+
+		ret = ioctl(fd, FS_IOC_FIEMAP, (unsigned long)fiemap);
+		if (ret < 0) {
+			ret = errno;
+			if (errno == EBADR) {
+				fprintf(stderr, "fiemap failed with "
+					"unsupported flags %x\n",
+					fiemap->fm_flags);
+			} else {
+				fprintf(stderr, "fiemap error: %d, %s\n",
+					ret, strerror(ret));
+			}
+			return -1;
+		}
+
+		if (!fiemap->fm_mapped_extents)
+			break;
+
+		for (i = 0; i < fiemap->fm_mapped_extents; i++) {
+			start = fm_ext[i].fe_logical >> cluster_shift;
+			len = fm_ext[i].fe_length >> cluster_shift;
+
+			if (fiemap->fm_flags & FIEMAP_FLAG_XATTR) {
+				cfp->unwrittens += len;
+			} else {
+				if (fm_ext[i].fe_falgs &
+				    FIEMAP_EXTENT_UNWRITTEN)
+					cfp->unwrittens += len;
+
+				if (fm_ext[i].fe_flags &
+				    FIEMAP_EXTENT_SHARED)
+					cfp->shared += len;
+
+				if ((prev_start + prev_len) < start)
+					cfp->holes += start -
+					      prev_start - prev_len;
+			}
+
+			if (fm_ext[i].fe_flags & FIEMAP_EXTENT_LAST)
+				last = 1;
+
+			prev_start = start;
+			prev_len = len;
+
+			extents_got ++;
+			cfp->clusters += len;
+		}
+
+		fiemap->fm_start = (fm_ext[i-1].fe_logical +
+				    fm_ext[i-1].fe_length);
+	} while (!last);
+
+	if (extents_got != num_extents) {
+		fprintf(stderr, "Got wrong extents number, expected: %lu, "
+				"got: %lu\n", num_extents, extents_got);
+		return -1;
+	}
+
+	if (flags & FIEMAP_FLAG_XATTR)
+		cfp->num_extents_xattr = num_extents;
+	else
+		cfp->num_extents = num_extents;
+
+	return ret;
+}
+
+static int dumpcmfs_get_fiemap(int fd, int flags, struct dumpcmfs_fiemap *cfp)
+{
+	int ret = 0;
+
+	ret = do_fiemap(fd, flags, cfp);
+	if (ret)
+		goto out;
+
+	if ((cfp->clusters > 1) && cfp->num_extents) {
+		float e = cfp->num_extents;
+		float c = cfp->clusters;
+		int clusters_per_mb = 
+			clusters_in_bytes(cfp->clustersize,
+					  CMFS_MAX_CLUSTERSIZE);
+
+		cfp->frag = 100 * (e / c);
+		cfp->score = cfp->frag * clusters_per_mb;
+	}
+
+out:
+	return ret;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -70,7 +329,7 @@ static int dumpcmfs_report_filestat(struct dumpcmfs_method *dm,
 	char *path = NULL;
 	char *filetype = NULL, *h_perm = NULL;
 	char *uname = NULL, *gname = NULL;
-	char *ah_time = NULL, *ch_time = NULL, mh_time = NULL;
+	char *ah_time = NULL, *ch_time = NULL, *mh_time = NULL;
 
 	ret = dumpcmfs_get_human_path(st->st_mode, dm->dm_path, &path);
 	if (ret)
