@@ -1740,7 +1740,7 @@ int main(int argc, char **argv)
 	clear_both_ends(s);
 
 	init_record(s, &superblock_rec, SFI_OTHER, S_IFREG | 0644);
-	init_record(s, &root_dir_rec, SFI_OTHER, S_IFREG | 0755);
+	init_record(s, &root_dir_rec, SFI_OTHER, S_IFDIR | 0755);
 	init_record(s, &system_dir_rec, SFI_OTHER, S_IFDIR | 0755);
 
 
