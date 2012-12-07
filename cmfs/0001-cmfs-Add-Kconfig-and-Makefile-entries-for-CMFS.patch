@@ -1,0 +1,86 @@
+From b605fc6a5ee4811bb0495f3e5722e1f38cc1db1a Mon Sep 17 00:00:00 2001
+From: Coly Li <i@coly.li>
+Date: Fri, 7 Dec 2012 09:04:41 +0800
+Subject: [PATCH] cmfs: Add Kconfig and Makefile entries for CMFS.
+
+Add cmfs entry in fs/Kconfig and fs/Makefile, as well as the initial
+fs/cmfs/Kconfig and fs/cmfs/Makefile.
+---
+ fs/Kconfig       |    1 +
+ fs/Makefile      |    1 +
+ fs/cmfs/Kconfig  |   23 +++++++++++++++++++++++
+ fs/cmfs/Makefile |    8 ++++++++
+ 4 files changed, 33 insertions(+), 0 deletions(-)
+ create mode 100644 fs/cmfs/Kconfig
+ create mode 100644 fs/cmfs/Makefile
+
+diff --git a/fs/Kconfig b/fs/Kconfig
+index f95ae3a..051b4cb 100644
+--- a/fs/Kconfig
++++ b/fs/Kconfig
+@@ -31,6 +31,7 @@ config FS_MBCACHE
+ 	default y if EXT4_FS=y && EXT4_FS_XATTR
+ 	default m if EXT2_FS_XATTR || EXT3_FS_XATTR || EXT4_FS_XATTR
+ 
++source "fs/cmfs/Kconfig"
+ source "fs/reiserfs/Kconfig"
+ source "fs/jfs/Kconfig"
+ 
+diff --git a/fs/Makefile b/fs/Makefile
+index 1d7af79..a09b9b8 100644
+--- a/fs/Makefile
++++ b/fs/Makefile
+@@ -70,6 +70,7 @@ obj-$(CONFIG_EXT2_FS)		+= ext2/
+ # We place ext4 after ext2 so plain ext2 root fs's are mounted using ext2
+ # unless explicitly requested by rootfstype
+ obj-$(CONFIG_EXT4_FS)		+= ext4/
++obj-$(CONFIG_CMFS_FS)		+= cmfs/
+ obj-$(CONFIG_JBD)		+= jbd/
+ obj-$(CONFIG_JBD2)		+= jbd2/
+ obj-$(CONFIG_CRAMFS)		+= cramfs/
+diff --git a/fs/cmfs/Kconfig b/fs/cmfs/Kconfig
+new file mode 100644
+index 0000000..9a3e349
+--- /dev/null
++++ b/fs/cmfs/Kconfig
+@@ -0,0 +1,23 @@
++config CMFS_FS
++	tristate "CMFS file system support"
++	depends on NET && SYSFS && CONFIGFS_FS
++	select JBD2
++	select CRC32
++	help
++	  CMFS is an extent based file system which is copied and modified
++	  from OCFS2. CMFS is designed for large files storage on high speed
++	  media like SSD. Unlike a gernal purpose file system, CMFS is focus
++	  on performance and storage capability efficiency on single
++	  hardware box.
++
++	  You'll want to install the cmfs-tools package in order to at least
++	  get "mount.cmfs".
++
++config CMFS_DEBUG_FS
++	bool "CMFS expensive checks"
++	depends on CMFS_FS
++	default n
++	help
++	  This option will enable expensive consistency checks. Enable
++	  this option for debugging only as it is likely to decrease
++	  performance of the filesystem.
+diff --git a/fs/cmfs/Makefile b/fs/cmfs/Makefile
+new file mode 100644
+index 0000000..f42c6ff
+--- /dev/null
++++ b/fs/cmfs/Makefile
+@@ -0,0 +1,8 @@
++ccflags-y := -Ifs/cmfs
++
++ccflags-y += -DCATCH_BH_JBD_RACES
++
++obj-$(CONFIG_CMFS_FS) +=	cmfs.o
++
++cmfs-objs := \
++	super.o 
+-- 
+1.7.7
+
