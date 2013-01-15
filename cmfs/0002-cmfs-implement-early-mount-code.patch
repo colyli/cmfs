@@ -25,43 +25,26 @@ Signed-off-by: Coly Li <i@coly.li>
  fs/cmfs/ver.h        |   32 ++
  12 files changed, 1011 insertions(+), 2 deletions(-)
 
-diff --git a/fs/cmfs/Kconfig b/fs/cmfs/Kconfig
-index 9a3e349..162f183 100644
---- a/fs/cmfs/Kconfig
-+++ b/fs/cmfs/Kconfig
-@@ -1,6 +1,6 @@
- config CMFS_FS
- 	tristate "CMFS file system support"
--	depends on NET && SYSFS && CONFIGFS_FS
-+	depends on SYSFS && CONFIGFS_FS
- 	select JBD2
- 	select CRC32
- 	help
-diff --git a/fs/cmfs/Makefile b/fs/cmfs/Makefile
-index f42c6ff..68f2961 100644
---- a/fs/cmfs/Makefile
-+++ b/fs/cmfs/Makefile
-@@ -5,4 +5,14 @@ ccflags-y += -DCATCH_BH_JBD_RACES
+Index: linux-cmfs/fs/cmfs/Makefile
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/Makefile
++++ linux-cmfs/fs/cmfs/Makefile
+@@ -5,4 +5,10 @@ ccflags-y += -DCATCH_BH_JBD_RACES
  obj-$(CONFIG_CMFS_FS) +=	cmfs.o
  
  cmfs-objs := \
--	super.o 
+-	super.o
 +	super.o			\
 +	journal.o		\
 +	ver.o			\
 +	dcache.o		\
 +	export.o		\
 +	localalloc.o		\
-+	sysfile.o		
-+
-+
-+
-+
-diff --git a/fs/cmfs/cmfs.h b/fs/cmfs/cmfs.h
-new file mode 100644
-index 0000000..a77a229
++	sysfile.o
+Index: linux-cmfs/fs/cmfs/cmfs.h
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/cmfs.h
++++ linux-cmfs/fs/cmfs/cmfs.h
 @@ -0,0 +1,18 @@
 +
 +
@@ -81,11 +64,10 @@ index 0000000..a77a229
 +		csb->csb_flags |= CMFS_CSB_SOFT_RO;
 +	spin_unlock(&csb->csb_lock);
 +}
-diff --git a/fs/cmfs/dcache.c b/fs/cmfs/dcache.c
-new file mode 100644
-index 0000000..2bcce4e
+Index: linux-cmfs/fs/cmfs/dcache.c
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/dcache.c
++++ linux-cmfs/fs/cmfs/dcache.c
 @@ -0,0 +1,14 @@
 +
 +
@@ -101,20 +83,18 @@ index 0000000..2bcce4e
 +	.d_automount		= NULL,
 +	.d_manage		= NULL,
 +};
-diff --git a/fs/cmfs/dcache.h b/fs/cmfs/dcache.h
-new file mode 100644
-index 0000000..b55e293
+Index: linux-cmfs/fs/cmfs/dcache.h
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/dcache.h
++++ linux-cmfs/fs/cmfs/dcache.h
 @@ -0,0 +1,3 @@
 +
 +
 +extern const struct dentry_operations cmfs_dentry_ops;
-diff --git a/fs/cmfs/export.c b/fs/cmfs/export.c
-new file mode 100644
-index 0000000..305cc7a
+Index: linux-cmfs/fs/cmfs/export.c
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/export.c
++++ linux-cmfs/fs/cmfs/export.c
 @@ -0,0 +1,9 @@
 +
 +const struct export_operatiosn cmfs_export_ops = {
@@ -125,11 +105,10 @@ index 0000000..305cc7a
 +	.get_parent		= NULL,
 +	.commit_metadata	= NULL,
 +};
-diff --git a/fs/cmfs/journal.c b/fs/cmfs/journal.c
-new file mode 100644
-index 0000000..f774d35
+Index: linux-cmfs/fs/cmfs/journal.c
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/journal.c
++++ linux-cmfs/fs/cmfs/journal.c
 @@ -0,0 +1,30 @@
 +
 +
@@ -161,11 +140,10 @@ index 0000000..f774d35
 +		ret = -EROFS;
 +	return ret;
 +}
-diff --git a/fs/cmfs/localalloc.c b/fs/cmfs/localalloc.c
-new file mode 100644
-index 0000000..2375e73
+Index: linux-cmfs/fs/cmfs/localalloc.c
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/localalloc.c
++++ linux-cmfs/fs/cmfs/localalloc.c
 @@ -0,0 +1,27 @@
 +
 +
@@ -194,11 +172,10 @@ index 0000000..2375e73
 +	csb->local_alloc_default_bits =
 +		csb->local_alloc_default_bits;
 +}
-diff --git a/fs/cmfs/super.c b/fs/cmfs/super.c
-new file mode 100644
-index 0000000..42b0073
+Index: linux-cmfs/fs/cmfs/super.c
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/super.c
++++ linux-cmfs/fs/cmfs/super.c
 @@ -0,0 +1,815 @@
 +
 +
@@ -247,12 +224,12 @@ index 0000000..42b0073
 +		goto bail;
 +	}
 +
-+	while((p = strsep(&options, ",")) != NULL) {
++	while ((p = strsep(&options, ",")) != NULL) {
 +		if (!(*p))
 +			continue;
 +
 +		token = match_token(p, tokens, args);
-+		switch(token) {
++		switch (token) {
 +		case Opt_int:
 +			mopt->mount_opt &= ~CMFS_MOUNT_NOINTR;
 +			break;
@@ -276,7 +253,7 @@ index 0000000..42b0073
 +			if (match_int(&args[0], &opiton))
 +				goto bail;
 +			if (option < 0)
-+				goto bail;;
++				goto bail;
 +			if (option == 0)
 +				option = JBD2_DEFAULT_MAX_COMMIT_AGE;
 +			mopt->commit_interval = HZ * option;
@@ -548,7 +525,7 @@ index 0000000..42b0073
 +	BUG_ON(!csb->s_sectorsize_bits);
 +
 +	spin_lock_init(&csb->csb_lock);
-+	
++
 +	atomic_set(&csb->alloc_stats.moves, 0);
 +	atomic_set(&csb->alloc_stats.local_data, 0);
 +	atomic_set(&csb->alloc_stats.bitmap_data, 0);
@@ -591,8 +568,9 @@ index 0000000..42b0073
 +	csb->s_feature_incompat =
 +		le32_to_cpu(CMFS_RAW_SB(di)->s_feature_incompat);
 +
-+	if ((i = CMFS_HAS_INCOMPAT_FEATURE(csb->sb,
-+					   ~CMFS_FEATURE_INCOMPAT_SUPP))) {
++	i = CMFS_HAS_INCOMPAT_FEATURE(csb->sb,
++				      ~CMFS_FEATURE_INCOMPAT_SUPP);
++	if (i) {
 +		mlog(ML_ERROR,
 +		     "couldn't mount because of unsupported optional "
 +		     "incompat features (%x).\n", i);
@@ -600,9 +578,9 @@ index 0000000..42b0073
 +		goto bail;
 +	}
 +
-+	if (!(csb->sb->s_flags & MS_RDONLY) &&
-+	    (i =  CMFS_HAS_RO_COMPAT_FEATURE(
-+			csb->sb, ~CMFS_FEATURE_RO_COMPAT_SUPP))) {
++	i =  CMFS_HAS_RO_COMPAT_FEATURE(csb->sb,
++					~CMFS_FEATURE_RO_COMPAT_SUPP);
++	if (!(csb->sb->s_flags & MS_RDONLY) && i) {
 +		mlog(ML_ERROR,
 +		     "couldn't mount RDWR because of unsupported "
 +		     "optional ro_incompat features (%x).\n", i);
@@ -622,7 +600,7 @@ index 0000000..42b0073
 +	/* initialize journal structure */
 +	journal = kzalloc(sizeof(struct cmfs_journal), GFP_KERNEL);
 +	if (!journal) {
-+		mlog(ML_ERROR, "unable to alloc journal.\n");	
++		mlog(ML_ERROR, "unable to alloc journal.\n");
 +		status = -ENOMEM;
 +		goto bail;
 +	}
@@ -855,8 +833,7 @@ index 0000000..42b0073
 +	}
 +
 +finally:
-+	if (local_alloc)
-+		kfree(local_alloc);
++	kfree(local_alloc);
 +	if (status)
 +		mlog_errno(status);
 +	return status;
@@ -941,7 +918,7 @@ index 0000000..42b0073
 +			     "mount was not specified.\n");
 +			goto read_super_error;
 +		}
-+		
++
 +		status = cmfs_check_journal(csb);
 +		if (status < 0) {
 +			if (status == -EROFS)
@@ -1015,24 +992,22 @@ index 0000000..42b0073
 +
 +	return status;
 +}
-diff --git a/fs/cmfs/sysfile.c b/fs/cmfs/sysfile.c
-new file mode 100644
-index 0000000..7cb8d2f
+Index: linux-cmfs/fs/cmfs/sysfile.c
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/sysfile.c
++++ linux-cmfs/fs/cmfs/sysfile.c
 @@ -0,0 +1,7 @@
 +
 +
 +
 +struct inode *cmfs_get_system_file_inode(struct cmfs_super *csb, int type)
 +{
-+	return NULL:
++	return NULL;
 +}
-diff --git a/fs/cmfs/ver.c b/fs/cmfs/ver.c
-new file mode 100644
-index 0000000..12be17a
+Index: linux-cmfs/fs/cmfs/ver.c
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/ver.c
++++ linux-cmfs/fs/cmfs/ver.c
 @@ -0,0 +1,44 @@
 +/* -*- mode: c; c-basic-offset: 8; -*-
 + * vim: noexpandtab sw=8 ts=8 sts=0:
@@ -1078,11 +1053,10 @@ index 0000000..12be17a
 +MODULE_DESCRIPTION(VERSION_STR);
 +
 +MODULE_VERSION(CMFS_BUILD_VERSION);
-diff --git a/fs/cmfs/ver.h b/fs/cmfs/ver.h
-new file mode 100644
-index 0000000..ac8e1e3
+Index: linux-cmfs/fs/cmfs/ver.h
+===================================================================
 --- /dev/null
-+++ b/fs/cmfs/ver.h
++++ linux-cmfs/fs/cmfs/ver.h
 @@ -0,0 +1,32 @@
 +/* -*- mode: c; c-basic-offset: 8; -*-
 + * vim: noexpandtab sw=8 ts=8 sts=0:
