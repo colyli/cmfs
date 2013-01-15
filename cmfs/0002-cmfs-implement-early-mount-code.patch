@@ -1,0 +1,1118 @@
+From: Coly Li <i@coly.li>
+Subject: [PATCH] cmfs: implement early mount code
+
+This is a very early code for cmfs mount implementation.
+Currently this patch does not pass compiling, there are
+something more to add,
+1) mlog routines
+2) module_init/exit
+3) data structures copy from cmfs-tools
+4) better text format to all source code files
+
+Signed-off-by: Coly Li <i@coly.li>
+---
+ fs/cmfs/Kconfig      |    2 +-
+ fs/cmfs/Makefile     |   12 +-
+ fs/cmfs/cmfs.h       |   18 ++
+ fs/cmfs/dcache.c     |   14 +
+ fs/cmfs/dcache.h     |    3 +
+ fs/cmfs/export.c     |    9 +
+ fs/cmfs/journal.c    |   30 ++
+ fs/cmfs/localalloc.c |   27 ++
+ fs/cmfs/super.c      |  815 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ fs/cmfs/sysfile.c    |    7 +
+ fs/cmfs/ver.c        |   44 +++
+ fs/cmfs/ver.h        |   32 ++
+ 12 files changed, 1011 insertions(+), 2 deletions(-)
+
+diff --git a/fs/cmfs/Kconfig b/fs/cmfs/Kconfig
+index 9a3e349..162f183 100644
+--- a/fs/cmfs/Kconfig
++++ b/fs/cmfs/Kconfig
+@@ -1,6 +1,6 @@
+ config CMFS_FS
+ 	tristate "CMFS file system support"
+-	depends on NET && SYSFS && CONFIGFS_FS
++	depends on SYSFS && CONFIGFS_FS
+ 	select JBD2
+ 	select CRC32
+ 	help
+diff --git a/fs/cmfs/Makefile b/fs/cmfs/Makefile
+index f42c6ff..68f2961 100644
+--- a/fs/cmfs/Makefile
++++ b/fs/cmfs/Makefile
+@@ -5,4 +5,14 @@ ccflags-y += -DCATCH_BH_JBD_RACES
+ obj-$(CONFIG_CMFS_FS) +=	cmfs.o
+ 
+ cmfs-objs := \
+-	super.o 
++	super.o			\
++	journal.o		\
++	ver.o			\
++	dcache.o		\
++	export.o		\
++	localalloc.o		\
++	sysfile.o		
++
++
++
++
+diff --git a/fs/cmfs/cmfs.h b/fs/cmfs/cmfs.h
+new file mode 100644
+index 0000000..a77a229
+--- /dev/null
++++ b/fs/cmfs/cmfs.h
+@@ -0,0 +1,18 @@
++
++
++
++static inline void cmfs_set_ro_flag(struct cmfs_super *csb,
++				    int flag)
++{
++	int hard;
++
++	hard = (flag == CMFS_HARD_READONLY) ? 1 : 0;
++
++	spin_lock(&csb->csb_lock);
++	csb->csb_flags &= ~(CMFS_CSB_SOFT_RO | CMFS_CSB_HARD_RO);
++	if (hard)
++		csb->csb_flags |= CMFS_CSB_HARD_RO;
++	else
++		csb->csb_flags |= CMFS_CSB_SOFT_RO;
++	spin_unlock(&csb->csb_lock);
++}
+diff --git a/fs/cmfs/dcache.c b/fs/cmfs/dcache.c
+new file mode 100644
+index 0000000..2bcce4e
+--- /dev/null
++++ b/fs/cmfs/dcache.c
+@@ -0,0 +1,14 @@
++
++
++const struct dentry_operations cmfs_dentry_ops = {
++	.d_revalidate		= NULL,
++	.d_hash			= NULL,
++	.d_compare		= NULL,
++	.d_delete		= NULL,
++	.d_release		= NULL,
++	.d_prune		= NULL,
++	.d_iput			= NULL,
++	.d_dname		= NULL,
++	.d_automount		= NULL,
++	.d_manage		= NULL,
++};
+diff --git a/fs/cmfs/dcache.h b/fs/cmfs/dcache.h
+new file mode 100644
+index 0000000..b55e293
+--- /dev/null
++++ b/fs/cmfs/dcache.h
+@@ -0,0 +1,3 @@
++
++
++extern const struct dentry_operations cmfs_dentry_ops;
+diff --git a/fs/cmfs/export.c b/fs/cmfs/export.c
+new file mode 100644
+index 0000000..305cc7a
+--- /dev/null
++++ b/fs/cmfs/export.c
+@@ -0,0 +1,9 @@
++
++const struct export_operatiosn cmfs_export_ops = {
++	.encode_fh		= NULL,
++	.fh_to_dentry		= NULL,
++	.fh_to_parent		= NULL,
++	.get_name		= NULL,
++	.get_parent		= NULL,
++	.commit_metadata	= NULL,
++};
+diff --git a/fs/cmfs/journal.c b/fs/cmfs/journal.c
+new file mode 100644
+index 0000000..f774d35
+--- /dev/null
++++ b/fs/cmfs/journal.c
+@@ -0,0 +1,30 @@
++
++
++/*
++ * Used for hard readonly access to determine whether jouranl
++ * requires recovery.
++ */
++int cmfs_check_journal(struct cmfs_super *csb)
++{
++	int ret = 0;
++	struct buffer_head *di_bh = NULL;
++	struct cmfs_dinode *di;
++	int journal_dirty = 0;
++
++	ret = cmfs_read_journal_inode(csb, &di_bh, NULL);
++	if (ret) {
++		mlog_errno(ret);
++		goto out;
++	}
++
++	di = (struct cmfs_dinode *)di_bh->b_data;
++	if (le32_to_cpu(di->id1.journal1.ij_flags) &
++	    CMFS_JOURNAL_DIRTY_FL)
++		journal_dirty = 1;
++	brelse(di_bh);
++	di_bh = NULL;
++out:
++	if (journal_dirty)
++		ret = -EROFS;
++	return ret;
++}
+diff --git a/fs/cmfs/localalloc.c b/fs/cmfs/localalloc.c
+new file mode 100644
+index 0000000..2375e73
+--- /dev/null
++++ b/fs/cmfs/localalloc.c
+@@ -0,0 +1,27 @@
++
++
++void cmfs_la_set_sizes(struct cmfs_super *csb, int requested_mb)
++{
++	struct super_block *sb = csb->sb;
++	unsigned int la_default_mb = cmfs_la_default_mb(csb);
++	unsigned int la_max_mb;
++
++	la_max_mb = cmfs_cluster_to_megabytes(sb,
++					      cmfs_local_alloc_size(sb) * 8);
++
++	if (requested_mb == -1) {
++		/* no user request - use defaults */
++		csb->local_alloc_default_bits =
++			cmfs_megabytes_to_clusters(sb, la_default_mb);
++	} else if (requested_mb > la_max_mb) {
++		/* request is too big, we give the maximum available */
++		csb->local_alloc_default_bits =
++			cmfs_metabytes_to_clusters(sb, la_max_mb);
++	} else {
++		csb->local_alloc_default_bits =
++			cmfs_metabytes_to_clusters(sb, requested_mb);
++	}
++
++	csb->local_alloc_default_bits =
++		csb->local_alloc_default_bits;
++}
+diff --git a/fs/cmfs/super.c b/fs/cmfs/super.c
+new file mode 100644
+index 0000000..42b0073
+--- /dev/null
++++ b/fs/cmfs/super.c
+@@ -0,0 +1,815 @@
++
++
++
++static const struct super_operations cmfs_sops = {
++	.alloc_inode		= NULL,
++	.destory_inode		= NULL,
++	.dirty_inode		= NULL,
++	.write_inode		= NULL,
++	.drop_inode		= NULL,
++	.evict_inode		= NULL,
++	.put_super		= NULL,
++	.sync_fs		= NULL,
++	.freeze_fs		= NULL,
++	.unfreeze_fs		= NULL,
++	.statfs			= NULL,
++	.remount_fs		= NULL,
++	.umount_begin		= NULL,
++	.show_options		= NULL,
++	.show_devname		= NULL,
++	.show_path		= NULL,
++	.show_stats		= NULL,
++	.bdev_try_to_free_page	= NULL,
++	.nr_cached_objects	= NULL,
++	.free_cached_objects	= NULL,
++};
++
++static int cmfs_parse_option(struct super_block *sb,
++			     char *options,
++			     struct mount_options *mopt,
++			     int is_remount)
++{
++	int status = 0;
++	int token, option;
++	char *p;
++	u32 tmp;
++	substring_t args[MAX_OPT_ARGS];
++
++	mopt->mount_opt = CMFS_MOUNT_NOINTR |
++			  CMFS_MOUNT_INODE64;
++
++	mopt->commit_interval = 0;
++
++	if (!options) {
++		status = 1;
++		goto bail;
++	}
++
++	while((p = strsep(&options, ",")) != NULL) {
++		if (!(*p))
++			continue;
++
++		token = match_token(p, tokens, args);
++		switch(token) {
++		case Opt_int:
++			mopt->mount_opt &= ~CMFS_MOUNT_NOINTR;
++			break;
++		case Opt_noint:
++			mopt->mount_opt |= CMFS_MOUNT_NOINTR;
++			break;
++		case Opt_err_panic:
++			mopt->mount_opt |= CMFS_MOUNT_ERRORS_PANIC;
++			break;
++		case Opt_err_ro:
++			mopt->mount_opt &= ~CMFS_MOUNT_ERRORS_PANIC;
++			break;
++		case Opt_data_ordered:
++			mopt->mount_opt &= ~CMFS_MOUNT_DATA_WRITEBACK;
++			break;
++		case Opt_data_writeback:
++			mopt->mount_opt |= CMFS_MOUNT_DATA_WRITEBACK;
++			break;
++		case Opt_commit:
++			option = 0;
++			if (match_int(&args[0], &opiton))
++				goto bail;
++			if (option < 0)
++				goto bail;;
++			if (option == 0)
++				option = JBD2_DEFAULT_MAX_COMMIT_AGE;
++			mopt->commit_interval = HZ * option;
++			break;
++		case Opt_barrier:
++			if (match_int(&args[0], &option))
++				goto bail;
++			if (option)
++				mopt->mount_opt |= CMFS_MOUNT_BARRIER;
++			else
++				mopt->mount_opt &= ~CMFS_MOUNT_BARRIER;
++			break;
++		case Opt_coherency_buffered:
++			mopt->mount_opt |= CMFS_MOUNT_COHERENCY_BUFFERED;
++			break;
++		case Opt_coherency_full:
++			mopt->mount_opt &= ~CMFS_MOUNT_COHERENCY_BUFFERED;
++			break;
++		default:
++			mlog(ML_ERROR,
++			     "Unrecognized mount option \"%s\" "
++			     "or missing value.\n", p);
++			goto bail;
++		}
++	}
++	status = 1;
++bail:
++	return status;
++}
++
++static int cmfs_verify_volume(struct cmfs_dinode *di,
++			      struct buffer_head *bh,
++			      u32 blksz)
++{
++	int status = -EINVAL;
++
++	if (!memcmp(di->i_signature,
++		   CMFS_SUPER_BLOCK_SIGNATURE,
++		   strlen(CMFS_SUPER_BLOCK_SIGNATURE))) {
++		if ((1 << le32_to_cpu(di->id2.i_super.s_blocksize_bits)) !=
++		    blksz) {
++			mlog(ML_ERROR,
++			     "found superblock with incorrect block size: "
++			     "found %u, should be %u\n",
++			     1 << le32_to_cpu(di->id2.i_super.s_blocksize_bits),
++			     blksz);
++		} else if (le16_to_cpu(di->id2.i_super.s_major_rev_level) !=
++			   CMFS_MAJOR_REV_LEVEL ||
++			   le16_to_cpu(di->id2.i_super.s_minor_rev_level) !=
++			   CMFS_MINOR_REV_LEVEL) {
++			mlog(ML_ERROR,
++			     "found superblock with bad version: "
++			     "found %u.%u, should be %u.%u\n",
++			     le16_to_cpu(di->id2.i_super.s_major_rev_level),
++			     le16_to_cpu(di->id2.i_super.s_minor_rev_level),
++			     CMFS_MAJOR_REV_LEVEL,
++			     CMFS_MINOR_REV_LEVEL);
++		} else if (bh->b_blocknr != le64_to_cpu(di->i_blkno)) {
++			mlog(ML_ERROR,
++			     "bad block number on superblock: "
++			     "found %llu, should be %llu\n",
++			     (unsigned long long)le64_to_cpu(di->i_blkno),
++			     (unsigned long long)bh->b_blocknr);
++		} else if (le32_to_cpu(di->id2.i_super.s_clustersize_bits) <
++			   CMFS_MIN_CLUSTERSIZE_BITS ||
++			   le32_to_cpu(di->id2.i_super.s_clustersize_bits) >
++			   CMFS_MAX_CLUSTERSIZE_BITS) {
++			mlog(ML_ERROR,
++			     "bad cluster size found: %u\n",
++			     1 << le32_to_cpu(
++				  di->id2.i_super.s_clustersizebits));
++		} else if (!le64_to_cpu(di->id2.i_super.s_root_blkno)) {
++			mlog(ML_ERROR, "bad root_blkno: 0\n");
++		} else if (!le64_to_cpu(di->id2.i_super.s_system_dir_blkno)) {
++			mlog(ML_ERROR, "bad system_dir_blkno: 0\n");
++		} else {
++			status = 0;
++		}
++	}
++
++bail:
++	if (status)
++		mlog_errno(status);
++	return status;
++}
++
++/* probe, load and verify cmfs super block */
++static int cmfs_sb_probe(struct super_block *sb,
++			 struct buffer_head **bh)
++{
++	int status;
++	struct cmfs_dinode *di;
++
++	*bh = NULL;
++	status = cmfs_get_sector(sb,
++				 bh,
++				 CMFS_SUPER_BLOCK_BLKNO,
++				 CMFS_MAX_BLOCKSIZE);
++	if (status < 0) {
++		mlog_errno(status);
++		goto bail;
++	}
++
++	di = (struct cmfs_dinode *)(*bh)->b_data;
++	status = cmfs_verify_volume(di, *bh, CMFS_MAX_BLOCKSIZE);
++	if (status < 0) {
++		brelse(*bh);
++		*bh = NULL;
++	}
++
++bail:
++	return status;
++}
++
++static unsigned long long cmfs_max_file_offset(unsigned int bbits,
++					       unsigned int cbits)
++{
++	unsigned int bytes = 1 << cbits;
++	unsigned int trim = bytes;
++	unsigned int bitshift = 32;
++
++	/*
++	 * i_size and all block offsets in cmfs are always 64 bits
++	 * wide, i_clusters is 32 bits, in cluster_size units. So
++	 * on 64 bit platforms, cluster size will be the limiting
++	 * factor
++	 */
++#if BITS_PER_LONG == 32
++	/* large (2TB+) block devices and files */
++# if defined(CONFIG_LBDAF)
++	BUILD_BUG_ON(sizeof(sector_t) != 8);
++	/*
++	 * We might be limited by page cache size
++	 */
++	if (bytes > PAGE_CACHE_SIZE)
++		bytes = PAGE_CACHE_SIZE;
++# else
++	/*
++	 * We are limited by the size of sector_t. Use block size,
++	 * as that's what we expose to the VFS
++	 */
++	bytes = 1 << bbits;
++# endif
++
++	/*
++	 * shift by 31 here so that we don't get larger
++	 * than MAX_LFS_FILESIZE
++	 */
++	bitshift = 31;
++#endif
++
++	/*
++	 * Trim by a whole cluster when we can actually approcach
++	 * the on-disk limits. Otherwise we can overflow
++	 * i_clusters when an extent start is at the max offset.
++	 */
++	return (((unsigned long long)bytes) << bitshift) - trim;
++}
++
++static int cmfs_setup_csb_uuid(struct cmfs_super *csb,
++			       const unsigned char *uuid,
++			       unsigned uuid_bytes)
++{
++	int i, ret;
++	char *ptr;
++
++	BUG_ON(uuid_bytes != CMFS_VOL_UUID_LEN);
++
++	csb->uuid_str = kzalloc(CMFS_VOL_UUID * 2 + 1, GFP_KERNEL);
++	if (csb->uuid_str == NULL)
++		return -ENOMEM;
++
++	for (i = 0, ptr = csb->uuid_str; i < CMFS_VOL_UUID_LEN; i++) {
++		/* print with '\0' */
++		ret = snprintf(ptr, 3, "%02X", uuid[i]);
++		if (ret != 2) {
++			/* drop super cleans up */
++			kfree(csb->uuid_str);
++			csb->uuid_str = NULL;
++			return -EINVAL;
++		}
++		/* then only advance past the last char */
++		ptr += 2;
++	}
++
++	return 0;
++}
++
++static int cmfs_init_global_system_inodes(struct cmfs_super *csb)
++{
++	struct inode *new = NULL;
++	int status = 0;
++	int i;
++
++	new = cmfs_iget(csb, csb->root_blkno, CMFS_FI_FLAG_SYSFILE, 0);
++	if (IS_ERR(new)) {
++		status = PTR_ERR(new);
++		goto bail;
++	}
++	csb->root_inode = new;
++
++	new = cmfs_iget(csb, csb->system_dir_blkno, CMFS_FI_FLAG_SYSFILE, 0);
++	if (IS_ERR(new)) {
++		iput(csb->root_inode);
++		csb->root_inode = NULL;
++		status = PTR_ERR(new);
++		goto root_bail;
++	}
++	csb->sys_root_inode = new;
++
++	for (i = CMFS_FIRST_SYSTEM_INODE;
++	     i <= CMFS_LAST_LOBAL_SYSTEM_INODE;
++	     i++) {
++		if (!cmfs_need_system_inode(csb, i))
++			continue;
++		new = cmfs_get_system_file_inode(csb, i);
++		if (!new) {
++			cmfs_release_system_inodes(csb);
++			status = -EINVAL;
++			goto sys_root_bail;
++		}
++		iput(new);
++	}
++
++	return status;
++
++sys_root_bail:
++	iput(csb->sys_root_inode);
++root_bail:
++	iput(csb->root_inode);
++bai:
++	mlog_errno(status);
++	return status;
++}
++
++static int cmfs_initialize_super(struct super_block *sb,
++				 struct buffer_head *bh)
++{
++	int status;
++	int i, cbits, bbits;
++	__le32 uuid_net_key;
++	struct cmfs_dinode *di;
++	struct inode *inode = NULL;
++	struct cmfs_journal *jouranl;
++	struct cmfs_super *csb;
++	u64 total_blocks;
++
++	di = (struct cmfs_dinode *)bh->b_data;
++	csb = kzalloc(sizeof(struct cmfs_super), GFP_KERNEL);
++	if (!csb) {
++		status = -ENOMEM;
++		mlog_errno(status);
++		goto bail;
++	}
++
++	sb->s_fs_info = csb;
++	sb->s_op = &cmfs_sops;
++	sb->s_d_op = &cmfs_dentry_ops;
++	sb->s_export_op = &cmfs_export_ops;
++	sb->s_time_gran = 1;
++	sb->s_flags |= MS_NOATIME;
++	/* This is needed to support O_LARGEFILE */
++	cbits = le32_to_cpu(di->id2.i_super.s_clustersize_bits);
++	bbits = le32_to_cpu(di->id2.i_super.s_blocksize_bits);
++	sb->s_maxbytes = cmfs_max_file_offset(bbits, cbits);
++	csb->sb = sb;
++	/* Save off for cmfs_rw_direct */
++	csb->s_sectsize_bits = blksize_bits(sector_size);
++	BUG_ON(!csb->s_sectorsize_bits);
++
++	spin_lock_init(&csb->csb_lock);
++	
++	atomic_set(&csb->alloc_stats.moves, 0);
++	atomic_set(&csb->alloc_stats.local_data, 0);
++	atomic_set(&csb->alloc_stats.bitmap_data, 0);
++	atomic_set(&csb->alloc_stats.bg_allocs, 0);
++	atomic_set(&csb->alloc_stats.bg_extends, 0);
++
++	snprintf(csb->dev_str, sizeof(csb->dev_str), "%u,%u",
++		MAJOR(csb->sb->s_dev), MINOR(csb->sb->s_dev));
++
++	csb->max_slots = le16_to_cpu(di->id2.i_super.s_max_slots);
++	if (csb->max_slots > CMFS_MAX_SLOTS ||
++	    csb->max_slots == 0) {
++		mlog(ML_ERROR, "Invalid number of alloc slots (%u)\n",
++		     csb->max_slots);
++		status = -EINVAL;
++		goto bail;
++	}
++
++	init_waitqueue_head(&csb->checkpoint_event);
++	atomic_set(&csb->needs_checkpoint, 0);
++
++	csb->s_atime_quantum = CMFS_DEFAULT_ATIME_QUNATUM;
++	csb->slot_num = CMFS_INVALID_SLOT;
++	csb->lcoal_alloc_state = CMFS_LA_UNUSED;
++	csb->local_alloc_bh = NULL;
++	INIT_DELAYED_WORK(*csb->la_enable_wq, cmfs_la_enable_worker);
++	init_waitqueue_head(&csb->csb_mount_event);
++
++	csb->vol_label = kmalloc(CMFS_MAX_VOL_LABEL_LEN, GFP_KERNEL);
++	if (!csb->vol_label) {
++		mlog(ML_ERROR, "unable to alloc vol label\n");
++		status = -ENOMEM;
++		goto bail;
++	}
++
++	csb->s_feature_compat =
++		le32_to_cpu(CMFS_RAW_SB(di)->s_feature_compat);
++	csb->s_feature_ro_compat =
++		le32_to_cpu(CMFS_RAW_SB(di)->s_feature_ro_compat);
++	csb->s_feature_incompat =
++		le32_to_cpu(CMFS_RAW_SB(di)->s_feature_incompat);
++
++	if ((i = CMFS_HAS_INCOMPAT_FEATURE(csb->sb,
++					   ~CMFS_FEATURE_INCOMPAT_SUPP))) {
++		mlog(ML_ERROR,
++		     "couldn't mount because of unsupported optional "
++		     "incompat features (%x).\n", i);
++		status = -EINVAL;
++		goto bail;
++	}
++
++	if (!(csb->sb->s_flags & MS_RDONLY) &&
++	    (i =  CMFS_HAS_RO_COMPAT_FEATURE(
++			csb->sb, ~CMFS_FEATURE_RO_COMPAT_SUPP))) {
++		mlog(ML_ERROR,
++		     "couldn't mount RDWR because of unsupported "
++		     "optional ro_incompat features (%x).\n", i);
++		status = -EINVAL;
++		goto bail;
++	}
++
++	get_random_bytes(&csb->s_next_generation, sizeof(u32));
++
++	/* XXX: FIXME copied from OCFS2 code
++	 * This should be done in ocfs2_journal_init(), but
++	 * unknow ordering issues will cause the filesystem
++	 * to crash. If anyone wants to figure out what part
++	 * of the code referes to osb->journal before
++	 * ocfs2_journal_init() is run, be my guest.
++	 */
++	/* initialize journal structure */
++	journal = kzalloc(sizeof(struct cmfs_journal), GFP_KERNEL);
++	if (!journal) {
++		mlog(ML_ERROR, "unable to alloc journal.\n");	
++		status = -ENOMEM;
++		goto bail;
++	}
++	csb->jouranl = journal;
++	jouranl->j_csb = csb;
++
++	atomic_set(&journal->j_num_trans, 0);
++	init_rwsem(&journal->j_trans_barrier);
++	init_waitqueue_head(&jouranl->j_checkpointed);
++	spin_lock_init(&journal->j_lock);
++	journal->j_trans_id = (unsigned long)1;
++	INIT_LIST_HEAD(&jouranl->j_la_cleanups);
++	INIT_WORK(&jouranl->j_recovery_work, cmfs_complete_recovery);
++	jouranl->j_state = CMFS_JOURNAL_FREE;
++
++	INIT_WORK(&csb->dentry_lock_work, cmfs_drop_dl_inodes);
++	csb->dentry_lock_list = NULL;
++
++	/* get some pseudo constants for clustersize bits */
++	csb->s_clustersize_bits =
++		le32_to_cpu(di->id2.i_super.s_clustersize_bits);
++	csb->s_clustersize = 1 << csb->s_clustersize_bits;
++
++	if (csb->s_clustersize < CMFS_MIN_CLUSTERSIZE ||
++	    csb->s_clustersize > CMFS_MAX_CLUSTERSIZE) {
++		mlog(ML_ERROR,
++		     "volume has invalid cluster size (%d)\n",
++		     csb->s_clustersize);
++		status = -EINVAL;
++		goto bail;
++	}
++
++	total_blocks = cmfs_clusters_to_blocks(csb->sb,
++					       le32_to_cpu(di->i_clusters));
++
++	status = generic_check_addressable(csb->sb->s_blocksize_bits,
++					   total_blocks);
++	if (status) {
++		mlog(ML_ERROR,
++		     "volume too large to mount safely on this system");
++		status = -EFBIG;
++		goto bail;
++	}
++
++	if (cmfs_setup_csb_uuid(csb,
++				di->id2.i_super.s_uuid,
++				sizeof(di->id2.i_super.s_uuid))) {
++		mlog(ML_ERROR,
++		     "out of memory trying to setup our uuid.\n");
++		status = -ENOMEM;
++		goto bail;
++	}
++
++	memcpy(&uuid_net_key, di->id2.i_super.s_uuid, sizeof(uuid_net_key));
++
++	strncpy(csb->vol_label, di->id2.i_super.s_label,
++				CMFS_MAX_VOL_LABEL_LEN - 1);
++	csb->vol_label[CMFS_MAX_VOL_LABEL_LEN - 1] = '\0';
++	csb->root_blkno = le64_to_cpu(di->id2.i_super.s_root_blkno);
++	csb->system_dir_blkno = le64_to_cpu(di->id2.i_super.s_system_dir_blkno);
++	cbs->first_cluster_group_blkno =
++		le64_to_cpu(di->id2.i_super.s_first_cluster_group);
++	csb->fs_generation = le32_to_cpu(di->i_fs_generation);
++	csb->uuid_hash = le32_to_cpu(di->id2.i_super.s_uuid_hash);
++	atomic_set(&csb->vol_state, VOLUME_INIT);
++
++	/* load root, system_dir, and all global system inodes */
++	status = cmfs_init_global_system_inodes(csb);
++	if (status < 0) {
++		mlog_errno(status);
++		goto bail;
++	}
++
++	/* global bitmap */
++	inode = cmfs_get_system_file_inode(csb, GLOBAL_BITMAP_SYSTEM_INODE);
++	if (!inode) {
++		status = -EINVAL;
++		mlog_errno(status);
++		goto bail;
++	}
++
++	csb->bitmap_blkno = CMFS_I(inode)->ip_blkno;
++	iput(inode);
++
++	csb->bitmap_cpg = cmfs_group_bitmap_size(sb, 0,
++				csb->s_feature_incompat) * 8;
++
++bail:
++	return status;
++}
++
++static void cmfs_release_system_inodes(struct cmfs_super *csb)
++{
++	int i;
++	struct inode *inode;
++
++	for (i = 0; i < NUM_GLOBAL_SYSTEM_INODES; i++) {
++		inode = csb->global_system_inodes[i];
++		if (inode) {
++			iput(inode);
++			csb->global_system_inodes[i] = NULL;
++		}
++	}
++
++	inode = csb->sys_root_inode;
++	if (inode) {
++		iput(inode);
++		csb->sys_root_inode = NULL;
++	}
++
++	inode = csb->root_inode;
++	if (inode) {
++		iput(inode);
++		csb->root_inode = NULL;
++	}
++
++	if (!csb->local_system_inodes)
++		return;
++
++	for (i = 0; i < NUM_LOCAL_SYSTEM_INODES; i++) {
++		if (csb->local_system_inodes[i]) {
++			iput(csb->local_system_inodes[i]);
++			csb->local_system_inodes[i] = NULL;
++		}
++	}
++
++	kfree(csb->local_system_inodes);
++	csb->local_system_inodes = NULL;
++}
++
++static int cmfs_init_local_system_inodes(struct cmfs_super *csb)
++{
++	struct inode *new = NULL;
++	int status = 0;
++	int i;
++
++	for (i = CMFS_LAST_GLOBAL_SYSTEM_INODE + 1;
++	     i < NUM_SYSTEM_INODES;
++	     i++) {
++		if (!cmfs_need_system_inode(csb, i))
++			continue;
++		new = cmfs_get_system_file_inode(csb, i);
++		if (!new) {
++			cmfs_release_system_inodes(csb);
++			status = -EINVAL;
++			mlog(ML_ERROR,
++			     "init system inodes failed: "
++			     "status=%d, sysfile=%d\n"
++			     status, i);
++			goto bail;
++		}
++		/* the array now has one ref, so drop this one */
++		iput(new);
++	}
++bail:
++	if (status)
++		mlog_errno(status);
++	return status;
++}
++
++static int cmfs_check_volume(struct cmfs_super *csb)
++{
++	int status;
++	int dirty;
++	int local;
++	/* only used if we recover ourselves */
++	struct cmfs_dinode *local_alloc = NULL;
++
++	/* init journal object */
++	status = cmfs_journal_init(csb->journal, &dirty);
++	if (status < 0) {
++		mlog(ML_ERROR, "Could not initialize jouranl!\n");
++		goto finally;
++	}
++
++	/* journal has been initialized, check to make sure
++	 * entire volume is addressable */
++	status = cmfs_journal_addressable(csb);
++	if (status < 0)
++		goto finally;
++
++	/*
++	 * if the journal was unmounted cleanly then we don't want
++	 * to recover anything. otherwise, journal_load will do
++	 * that dirty work for us.
++	 */
++	if (!dirty) {
++		status = cmfs_journal_wipe(csb->journal, 0);
++		if (status < 0) {
++			mlog_errno(tatus);
++			goto finally;
++		}
++	} else {
++		printk(KERN_NOTICE "cmfs: File system on device (%s) "
++		       "was not unmounted cleanly, recovering it.\n",
++		       csb->dev_str);
++	}
++
++	/* will play back anything left in journal */
++	status = cmfs_journal_load(csb->journal, local, dirty);
++	if (status < 0) {
++		mlog(ML_ERROR, "cmfs journal load failed! %d\n", status);
++		goto finally;
++	}
++
++	if (dirty) {
++		/* recover local alloc if we didn't unmount cleanly */
++		status = cmfs_begin_local_alloc_recovery(csb,
++							 &local_alloc);
++		if (status < 0) {
++			mlog_errno(status);
++			goto finally;
++		}
++		/* we complete the recovery process after we've marked
++		 * ourselves as mounted */
++	}
++
++	status = cmfs_load_local_alloc(csb);
++	if (status < 0) {
++		mlog_errno(status);
++		goto finally;
++	}
++
++	if (dirty) {
++		/* recovery will be completed after we've mounted
++		 * the rest of the volume */
++		csb->dirty = 1;
++		csb->local_alloc_copy = local_alloc;
++		local_alloc = NULL;
++	}
++
++finally:
++	if (local_alloc)
++		kfree(local_alloc);
++	if (status)
++		mlog_errno(status);
++	return status;
++}
++
++static int cmfs_mount_volume(struct super_block *sb)
++{
++	int status = 0;
++	int unlock_super = 0;
++	struct cmfs_super *csb = CMFS_SB(sb);
++
++	if (cmfs_is_hard_readonly(csb))
++		goto leave;
++
++	status = cmfs_super_lock(csb, 1);
++	if (status < 0)
++		goto leave;
++	unlock_super = 1;
++
++	/* load all local system inodes */
++	status = cmfs_init_local_system_inodes(csb);
++	if (status < 0)
++		goto leave;
++
++	status = cmfs_check_volume(csb);
++	if (status < 0)
++		goto leave;
++
++leave:
++	if (status < 0)
++		mlog_errno(status);
++
++	if (unlock_super)
++		cmfs_super_unlock(csb, 1);
++
++	return status;
++}
++
++/* core part of mount cmfs */
++static int cmfs_fill_super(struct super_block *sb, void *data, int silent)
++{
++	struct dentry *root;
++	int status, sector_size;
++	struct mount_options parsed_options;
++	struct inode *inode = NULL;
++	struct cmfs_super *csb = NULL;
++	struct buffer_head *bh = NULL;
++
++	if (!cmfs_parse_options(sb, data, &parsed_options, 0)) {
++		status = -EINVAL;
++		goto read_super_error;
++	}
++
++	status = cmfs_sb_probe(sb, &bh);
++	if (status < 0) {
++		mlog(ML_ERROR, "superblock probe failed!\n");
++		goto read_super_error;
++	}
++
++	status = cmfs_initialize_super(sb, bh);
++	csb = CMFS_SB(sb);
++	if (status < 0) {
++		mlog_errno(status);
++		goto read_super_error;
++	}
++	brelse(bh);
++	bh = NULL;
++
++	csb->s_mount_opt = parsed_options.mount_opt;
++	csb->s_atime_quantum = parsed_options.atime_quantum;
++	csb->csb_commit_interval = parsed_options.commit_interval;
++
++	cmfs_la_set_sizes(csb, parsed_options.localalloc_opt);
++	sb->s_magic = CMFS_SUPER_MAGIC;
++
++	/* hard readonly mode only if: bdev_read_only, MS_RDONLY */
++	if (bdev_read_only(sb->s_bdev)) {
++		if (!(sb->s_flags & MS_RDONLY)) {
++			status = -EACCES;
++			mlog(ML_ERROR,
++			     "Readonly device detected but readonly "
++			     "mount was not specified.\n");
++			goto read_super_error;
++		}
++		
++		status = cmfs_check_journal(csb);
++		if (status < 0) {
++			if (status == -EROFS)
++				mlog(ML_ERROR,
++				     "Recovery required on readonly "
++				     "file system, but write access "
++				     "is unavailable.\n");
++			else
++				mlog_errno(status);
++
++			goto read_super_error;
++		}
++
++		cmfs_set_ro_flag(csb, CMFS_HARD_READONLY);
++
++		printk(KERN_NOTICE "cmfs: Readonly device (%s) detected. "
++		       "file system is set to readonly, recovery will be "
++		       "skipped.\n", csb->dev_str);
++	}
++
++	if (!cmfs_is_hard_readonly(csb)) {
++		if (sb->s_flags & MS_RDONLY)
++			cmfs_set_ro_flag(csb, CMFS_SOFT_READONLY);
++	}
++
++	status = cmfs_mount_volume(sb);
++	if (status < 0)
++		goto read_super_error;
++
++	if (csb->root_inode)
++		inode = igrab(csb->root_inode);
++
++	if (!inode) {
++		status = -EIO;
++		mlog_errno(status);
++		goto read_super_error;
++	}
++
++	root = d_make_root(inode);
++	if (!root) {
++		status = -ENOMEM;
++		mlog_error(status);
++		goto read_super_error;
++	}
++
++	sb->s_root = root;
++
++	cmfs_complete_mount_recovery(csb);
++
++	printk(KERN_INFO "cmfs: Mounting device (%s) with %s data mode.\n",
++	       csb->dev_str,
++	       (csb->s_mount_opt & CMFS_MOUNT_DATA_WRITEBACK) ?
++	       "writeback" : "ordered");
++
++	atomic_set(&csb->vol_state, VOLUME_MOUNTED);
++	wake_up(&csb->csb_mount_event);
++
++	return status;
++
++read_super_error:
++	brelse(bh);
++
++	if (csb) {
++		atomic_set(&csb->vol_state, VOLUME_DISABLED);
++		wake_up(&csb->mount_event);
++		cmfs_dismount_volume(sb, 1);
++	}
++
++	if (status)
++		mlog_errno(status);
++
++	return status;
++}
+diff --git a/fs/cmfs/sysfile.c b/fs/cmfs/sysfile.c
+new file mode 100644
+index 0000000..7cb8d2f
+--- /dev/null
++++ b/fs/cmfs/sysfile.c
+@@ -0,0 +1,7 @@
++
++
++
++struct inode *cmfs_get_system_file_inode(struct cmfs_super *csb, int type)
++{
++	return NULL:
++}
+diff --git a/fs/cmfs/ver.c b/fs/cmfs/ver.c
+new file mode 100644
+index 0000000..12be17a
+--- /dev/null
++++ b/fs/cmfs/ver.c
+@@ -0,0 +1,44 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * ver.c
++ *
++ * version string
++ * (Copied and modified from fs/cofs2/ver.c)
++ *
++ * Copyright (C) 2002, 2005 Oracle.  All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#include <linux/module.h>
++#include <linux/string.h>
++#include <linux/kernel.h>
++
++#include "ver.h"
++
++#define CMFS_BUILD_VERSION "0.1"
++
++#define VERSION_STR "CMFS " CMFS_BUILD_VERSION
++
++void cmfs_print_version(void)
++{
++	printk(KERN_INFO "%s\n", VERSION_STR);
++}
++
++MODULE_DESCRIPTION(VERSION_STR);
++
++MODULE_VERSION(CMFS_BUILD_VERSION);
+diff --git a/fs/cmfs/ver.h b/fs/cmfs/ver.h
+new file mode 100644
+index 0000000..ac8e1e3
+--- /dev/null
++++ b/fs/cmfs/ver.h
+@@ -0,0 +1,32 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * ver.h
++ *
++ * Function prototypes
++ * (Copied and modified from fs/ocfs2/ver.h)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_VER_H
++#define CMFS_VER_H
++
++void cmfs_print_version(void);
++
++#endif /* CMFS_VER_H */
