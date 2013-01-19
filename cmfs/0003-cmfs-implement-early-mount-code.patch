@@ -29,7 +29,7 @@ Index: linux-cmfs/fs/cmfs/Makefile
 ===================================================================
 --- linux-cmfs.orig/fs/cmfs/Makefile
 +++ linux-cmfs/fs/cmfs/Makefile
-@@ -5,4 +5,10 @@ ccflags-y += -DCATCH_BH_JBD_RACES
+@@ -5,4 +5,12 @@ ccflags-y += -DCATCH_BH_JBD_RACES
  obj-$(CONFIG_CMFS_FS) +=	cmfs.o
  
  cmfs-objs := \
@@ -40,14 +40,198 @@ Index: linux-cmfs/fs/cmfs/Makefile
 +	dcache.o		\
 +	export.o		\
 +	localalloc.o		\
-+	sysfile.o
++	sysfile.o		\
++	inode.o			\
++	journal.o
 Index: linux-cmfs/fs/cmfs/cmfs.h
 ===================================================================
 --- /dev/null
 +++ linux-cmfs/fs/cmfs/cmfs.h
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,221 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * cmfs.h
++ *
++ * Defines macros and structures used in CMFS.
++ * (Copied and modified from fs/ocfs2/ocfs2.h)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2012, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++#ifndef CMFS_H
++#define CMFS_H
++
++#include <linux/spinlock.h>
++#include <linux/sched.h>
++#include <linux/wait.h>
++#include <linux/list.h>
++#include <linux/rbtree.h>
++#include <linux/kref.h>
++#include <linux/workqueue.h>
++#include <linux/mutex.h>
++#include <linux/lockdep.h>
++#include <linux/jbd2.h>
++
++#include "cmfs_fs.h"
++
++#define CMFS_HARD_READONLY	1
++#define CMFS_SOFT_READONLY	0
++
++#define CMFS_CSB_SOFT_RO		0x0001
++#define CMFS_CSB_HARD_RO		0x0002
++#define CMFS_CSB_ERROR_FS		0x0004
++
++#define CMFS_DEFAULT_ATIME_QUANTUM	60
++
++enum cmfs_mount_options
++{
++	CMFS_MOUNT_BARRIER = 1 << 0,		/* Use block barriers */
++	CMFS_MOUNT_NOINTR = 1 << 1,		/* Don't cache signals */
++	CMFS_MOUNT_ERRORS_PANIC = 1 << 2,	/* Panic on errors */
++	CMFS_MOUNT_DATA_WRITEBACK = 1 << 3,	/* No data ordering */
++	CMFS_MOUNT_INODE64 = 1 << 4,		/* Allow inode numbers > 2^32 */
++	CMFS_MOUNT_COHERENCY_BUFFERED = 1 << 5,	/* Allow concurrent O_DIRECT
++						   writes */
++};
++
++enum cmfs_vol_state
++{
++	VOLUME_INIT = 0,
++	VOLUME_MOUNTED,
++	VOLUME_DISMOUNTED,
++	VOLUME_DISABLED
++};
 +
 +
++struct cmfs_alloc_stats
++{
++	atomic_t moves;
++	atomic_t local_data;
++	atomic_t bitmap_data;
++	atomic_t bg_allocs;
++	atomic_t bg_extends;
++};
++
++enum cmfs_local_alloc_state
++{
++	CMFS_LA_UNUSED = 0,	/* Local alloc will neber be used for this
++				 * mount point */
++	CMFS_LA_ENABLED,	/* Local alloc is in use */
++	CMFS_LA_THROTLED,	/* Local alloc is in use, but number of
++				 * bits has been reduced */
++	CMFS_LA_DISABLE		/* Local alloc has temporariely been
++				 * disabled */
++};
++
++
++
++struct cmfs_super
++{
++	struct task_struct *commit_task;
++	struct super_block *sb;
++	struct inode *root_inode;
++	struct inode *sys_root_inode;
++	struct inode *global_system_inodes[NUM_GLOBAL_SYSTEM_INODES];
++	struct inode **local_system_inodes;
++
++	u64 root_blkno;
++	u64 system_dir_blkno;
++	u64 bitmap_blkno;
++	u32 bitmap_cpg;
++	u8 *uuid;
++	char *uuid_str;
++	u32 uuid_hash;
++	u8 *vol_label;
++	u64 first_cluster_group_blkno;
++	u32 fs_generation;
++
++	u32 s_feature_compat;
++	u32 s_feature_incompat;
++	u32 s_feature_ro_compat;
++
++	/*
++	 * Protects s_next_generation, csb_flags.
++	 * Could protect more on csb as it's very short lived.
++	 */
++	spinlock_t csb_lock;
++
++	u32 s_next_generation;
++	unsigned long csb_flags;
++	unsigned long s_mount_opt;
++	unsigned long s_atime_quantum;
++
++	unsigned int max_slots;
++	int slot_num;
++	int s_sectsize_bits;
++	int s_clustersize;
++	int s_clustersize_bits;
++	unsigned int s_xattr_inline_size;
++
++	atomic_t vol_state;
++	struct mutex recovery_lock;
++	struct task_struct *recovery_thread_task;
++	int disable_recovery;
++	wait_queue_head_t checkpoint_event;
++	atomic_t needs_checkpoint;
++	struct cmfs_journal *journal;
++	unsigned long csb_commit_interval;
++
++	struct delayed_work la_enable_wq;
++
++	/*
++	 * Must hold local alloc i_mutex and csb->csb_lock to change
++	 * local_alloc_bits. Reads can be done under either lock
++	 */
++	unsigned int local_alloc_bits;
++	unsigned int local_alloc_default_bits;
++
++	/* protected by csb_lock */
++	enum cmfs_local_alloc_state local_alloc_state;
++
++	struct buffer_head *local_alloc_bh;
++
++	u64 la_last_gd;
++
++	/* for local slot recovery during mount */
++	int dirty;
++	struct cmfs_dinode *local_alloc_copy;
++
++	struct cmfs_alloc_stats alloc_stats;
++	/* "major.minor" of the device */
++	char dev_str[20];
++
++	struct dentry *csb_debug_root;
++	struct dentry *csb_ctxt;
++
++	/* List of dentry locks to release. Anyone can add locks to
++	 * this list, cmfs_sq processes the list */
++	struct cmfs_dentry_lock *dentry_lock_list;
++	struct work_struct dentry_lock_work;
++
++	wait_queue_head_t recovery_event;
++	wait_queue_head_t csb_mount_event;
++
++	/* the group we used to allocate inodes */
++	u64 csb_inode_alloc_group;
++};
++
++#define CMFS_SB(sb)	((struct cmfs_super *)(sb)->s_fs_info)
 +
 +static inline void cmfs_set_ro_flag(struct cmfs_super *csb,
 +				    int flag)
@@ -64,12 +248,67 @@ Index: linux-cmfs/fs/cmfs/cmfs.h
 +		csb->csb_flags |= CMFS_CSB_SOFT_RO;
 +	spin_unlock(&csb->csb_lock);
 +}
++
++static inline u64 cmfs_clusters_to_blocks(struct super_block *sb,
++					  u32 clusters)
++{
++	int c_to_b_bits = CMFS_SB(sb)->s_clustersize_bits -
++		sb->s_blocksize_bits;
++	return (u64)clusters << c_to_b_bits;
++}
++
++static inline u32 cmfs_blocks_to_clusters(struct super_block *sb,
++					  u64 blocks)
++{
++	int b_to_c_bits = CMFS_SB(sb)->s_clustersize_bits -
++		sb->s_blocksize_bits;
++
++	return (u32)(blocks >> b_to_c_bits);
++}
++
++
++
++#endif
 Index: linux-cmfs/fs/cmfs/dcache.c
 ===================================================================
 --- /dev/null
 +++ linux-cmfs/fs/cmfs/dcache.c
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,53 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * dcache.c
++ *
++ * dentry cache handling code
++ * (Copied and modified from fs/ocfs2/dcache.h)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
 +
++#include <linux/fs.h>
++#include <linux/types.h>
++#include <linux/slab.h>
++#include <linux/namei.h>
++
++#include "cmfs.h"
++#include "dcache.h"
++#include "inode.h"
 +
 +const struct dentry_operations cmfs_dentry_ops = {
 +	.d_revalidate		= NULL,
@@ -83,14 +322,52 @@ Index: linux-cmfs/fs/cmfs/dcache.c
 +	.d_automount		= NULL,
 +	.d_manage		= NULL,
 +};
++
++void cmfs_drop_dl_inodes(struct work_struct *work)
++{
++	return;
++}
 Index: linux-cmfs/fs/cmfs/dcache.h
 ===================================================================
 --- /dev/null
 +++ linux-cmfs/fs/cmfs/dcache.h
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,36 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * dcache.h
++ *
++ * Function prototypes
++ * (Copied and modified from fs/ocfs2/dcache.h)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_DCACHE_H
++#define CMFS_DCACHE_H
 +
 +
 +extern const struct dentry_operations cmfs_dentry_ops;
++void cmfs_drop_dl_inodes(struct work_struct *work);
++
++
++
++#endif /* CMFS_DCACHE_H */
 Index: linux-cmfs/fs/cmfs/export.c
 ===================================================================
 --- /dev/null
@@ -109,7 +386,7 @@ Index: linux-cmfs/fs/cmfs/journal.c
 ===================================================================
 --- /dev/null
 +++ linux-cmfs/fs/cmfs/journal.c
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,35 @@
 +
 +
 +/*
@@ -140,11 +417,16 @@ Index: linux-cmfs/fs/cmfs/journal.c
 +		ret = -EROFS;
 +	return ret;
 +}
++
++void cmfs_complete_recovery(struct work_struct *work)
++{
++	return;
++}
 Index: linux-cmfs/fs/cmfs/localalloc.c
 ===================================================================
 --- /dev/null
 +++ linux-cmfs/fs/cmfs/localalloc.c
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,38 @@
 +
 +
 +void cmfs_la_set_sizes(struct cmfs_super *csb, int requested_mb)
@@ -172,17 +454,86 @@ Index: linux-cmfs/fs/cmfs/localalloc.c
 +	csb->local_alloc_default_bits =
 +		csb->local_alloc_default_bits;
 +}
++
++void cmfs_la_enable_worker(struct work_struct *work)
++{
++	struct cmfs_super *csb =
++		container_of(work, struct cmfs_super,
++			     la_enable_wq.work);
++
++	spin_lock(&csb->csb_lock);
++	csb->local_alloc_state = CMFS_LA_ENABLED;
++	spin_unlock(&csb->csb_lock);
++}
 Index: linux-cmfs/fs/cmfs/super.c
 ===================================================================
 --- /dev/null
 +++ linux-cmfs/fs/cmfs/super.c
-@@ -0,0 +1,815 @@
+@@ -0,0 +1,919 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * super.c
++ *
++ * load/unload driver, mount/dismount volumes
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2012, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
 +
++#include <linux/module.h>
++#include <linux/fs.h>
++#include <linux/types.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/random.h>
++#include <linux/statfs.h>
++#include <linux/moduleparam.h>
++#include <linux/blkdev.h>
++#include <linux/parser.h>
++#include <linux/crc32.h>
++#include <linux/mount.h>
++#include <linux/seq_file.h>
 +
++#include "masklog.h"
++#include "cmfs.h"
++#include "inode.h"
++#include "sysfile.h"
++#include "dcache.h"
++#include "export.h"
++#include "localalloc.h"
++#include "journal.h"
++
++MODULE_AUTHOR("Coly Li <i@coly.li>");
++MODULE_LICENSE("GPL");
++
++struct mount_options
++{
++	unsigned long commit_interval;
++	unsigned long mount_opt;
++	unsigned int atime_quantum;
++	signed short slot;
++	int localalloc_opt;
++};
 +
 +static const struct super_operations cmfs_sops = {
 +	.alloc_inode		= NULL,
-+	.destory_inode		= NULL,
++	.destroy_inode		= NULL,
 +	.dirty_inode		= NULL,
 +	.write_inode		= NULL,
 +	.drop_inode		= NULL,
@@ -203,6 +554,40 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	.free_cached_objects	= NULL,
 +};
 +
++enum {
++	Opt_barrier,
++	Opt_err_panic,
++	Opt_err_ro,
++	Opt_intr,
++	Opt_nointr,
++	Opt_data_ordered,
++	Opt_data_writeback,
++	Opt_atime_quantum,
++	Opt_commit,
++	Opt_localalloc,
++	Opt_inode64,
++	Opt_coherency_buffered,
++	Opt_coherency_full,
++	Opt_err,
++};
++
++static const match_table_t tokens = {
++	{Opt_barrier, "barrier=%u"},
++	{Opt_err_panic, "errors=panic"},
++	{Opt_err_ro, "errors=remount-ro"},
++	{Opt_intr, "intr"},
++	{Opt_nointr, "nointr"},
++	{Opt_data_ordered, "data=ordered"},
++	{Opt_data_writeback, "data=writeback"},
++	{Opt_atime_quantum, "atime_quantum=%u"},
++	{Opt_commit, "commit=%u"},
++	{Opt_localalloc, "localalloc=%d"},
++	{Opt_inode64, "inode64"},
++	{Opt_coherency_buffered, "coherency=buffered"},
++	{Opt_coherency_full, "coherency=full"},
++	{Opt_err, NULL},
++};
++
 +static int cmfs_parse_option(struct super_block *sb,
 +			     char *options,
 +			     struct mount_options *mopt,
@@ -211,7 +596,6 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	int status = 0;
 +	int token, option;
 +	char *p;
-+	u32 tmp;
 +	substring_t args[MAX_OPT_ARGS];
 +
 +	mopt->mount_opt = CMFS_MOUNT_NOINTR |
@@ -230,10 +614,10 @@ Index: linux-cmfs/fs/cmfs/super.c
 +
 +		token = match_token(p, tokens, args);
 +		switch (token) {
-+		case Opt_int:
++		case Opt_intr:
 +			mopt->mount_opt &= ~CMFS_MOUNT_NOINTR;
 +			break;
-+		case Opt_noint:
++		case Opt_nointr:
 +			mopt->mount_opt |= CMFS_MOUNT_NOINTR;
 +			break;
 +		case Opt_err_panic:
@@ -250,7 +634,7 @@ Index: linux-cmfs/fs/cmfs/super.c
 +			break;
 +		case Opt_commit:
 +			option = 0;
-+			if (match_int(&args[0], &opiton))
++			if (match_int(&args[0], &option))
 +				goto bail;
 +			if (option < 0)
 +				goto bail;
@@ -324,7 +708,7 @@ Index: linux-cmfs/fs/cmfs/super.c
 +			mlog(ML_ERROR,
 +			     "bad cluster size found: %u\n",
 +			     1 << le32_to_cpu(
-+				  di->id2.i_super.s_clustersizebits));
++				  di->id2.i_super.s_clustersize_bits));
 +		} else if (!le64_to_cpu(di->id2.i_super.s_root_blkno)) {
 +			mlog(ML_ERROR, "bad root_blkno: 0\n");
 +		} else if (!le64_to_cpu(di->id2.i_super.s_system_dir_blkno)) {
@@ -334,10 +718,36 @@ Index: linux-cmfs/fs/cmfs/super.c
 +		}
 +	}
 +
-+bail:
 +	if (status)
 +		mlog_errno(status);
 +	return status;
++}
++
++static int cmfs_get_sector(struct super_block *sb,
++			   struct buffer_head **bh,
++			   int block,
++			   int sect_size)
++{
++	if (!sb_set_blocksize(sb, sect_size)) {
++		mlog(ML_ERROR, "unable to set blocksize\n");
++		return -EIO;
++	}
++
++	*bh = sb_getblk(sb, block);
++	if (!*bh) {
++		mlog_errno(-EIO);
++		return -EIO;
++	}
++	lock_buffer(*bh);
++	ll_rw_block(READ, 1, bh);
++	wait_on_buffer(*bh);
++	if (!buffer_uptodate(*bh)) {
++		mlog_errno(-EIO);
++		brelse(*bh);
++		*bh = NULL;
++		return -EIO;
++	}
++	return 0;
 +}
 +
 +/* probe, load and verify cmfs super block */
@@ -422,7 +832,7 @@ Index: linux-cmfs/fs/cmfs/super.c
 +
 +	BUG_ON(uuid_bytes != CMFS_VOL_UUID_LEN);
 +
-+	csb->uuid_str = kzalloc(CMFS_VOL_UUID * 2 + 1, GFP_KERNEL);
++	csb->uuid_str = kzalloc(CMFS_VOL_UUID_LEN * 2 + 1, GFP_KERNEL);
 +	if (csb->uuid_str == NULL)
 +		return -ENOMEM;
 +
@@ -440,6 +850,45 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	}
 +
 +	return 0;
++}
++
++static void cmfs_release_system_inodes(struct cmfs_super *csb)
++{
++	int i;
++	struct inode *inode;
++
++	for (i = 0; i < NUM_GLOBAL_SYSTEM_INODES; i++) {
++		inode = csb->global_system_inodes[i];
++		if (inode) {
++			iput(inode);
++			csb->global_system_inodes[i] = NULL;
++		}
++	}
++
++	inode = csb->sys_root_inode;
++	if (inode) {
++		iput(inode);
++		csb->sys_root_inode = NULL;
++	}
++
++	inode = csb->root_inode;
++	if (inode) {
++		iput(inode);
++		csb->root_inode = NULL;
++	}
++
++	if (!csb->local_system_inodes)
++		return;
++
++	for (i = 0; i < NUM_LOCAL_SYSTEM_INODES; i++) {
++		if (csb->local_system_inodes[i]) {
++			iput(csb->local_system_inodes[i]);
++			csb->local_system_inodes[i] = NULL;
++		}
++	}
++
++	kfree(csb->local_system_inodes);
++	csb->local_system_inodes = NULL;
 +}
 +
 +static int cmfs_init_global_system_inodes(struct cmfs_super *csb)
@@ -464,11 +913,9 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	}
 +	csb->sys_root_inode = new;
 +
-+	for (i = CMFS_FIRST_SYSTEM_INODE;
-+	     i <= CMFS_LAST_LOBAL_SYSTEM_INODE;
++	for (i = CMFS_FIRST_ONLINE_SYSTEM_INODE;
++	     i <= CMFS_LAST_GLOBAL_SYSTEM_INODE;
 +	     i++) {
-+		if (!cmfs_need_system_inode(csb, i))
-+			continue;
 +		new = cmfs_get_system_file_inode(csb, i);
 +		if (!new) {
 +			cmfs_release_system_inodes(csb);
@@ -484,7 +931,7 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	iput(csb->sys_root_inode);
 +root_bail:
 +	iput(csb->root_inode);
-+bai:
++bail:
 +	mlog_errno(status);
 +	return status;
 +}
@@ -497,7 +944,7 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	__le32 uuid_net_key;
 +	struct cmfs_dinode *di;
 +	struct inode *inode = NULL;
-+	struct cmfs_journal *jouranl;
++	struct cmfs_journal *journal;
 +	struct cmfs_super *csb;
 +	u64 total_blocks;
 +
@@ -520,9 +967,6 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	bbits = le32_to_cpu(di->id2.i_super.s_blocksize_bits);
 +	sb->s_maxbytes = cmfs_max_file_offset(bbits, cbits);
 +	csb->sb = sb;
-+	/* Save off for cmfs_rw_direct */
-+	csb->s_sectsize_bits = blksize_bits(sector_size);
-+	BUG_ON(!csb->s_sectorsize_bits);
 +
 +	spin_lock_init(&csb->csb_lock);
 +
@@ -535,23 +979,14 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	snprintf(csb->dev_str, sizeof(csb->dev_str), "%u,%u",
 +		MAJOR(csb->sb->s_dev), MINOR(csb->sb->s_dev));
 +
-+	csb->max_slots = le16_to_cpu(di->id2.i_super.s_max_slots);
-+	if (csb->max_slots > CMFS_MAX_SLOTS ||
-+	    csb->max_slots == 0) {
-+		mlog(ML_ERROR, "Invalid number of alloc slots (%u)\n",
-+		     csb->max_slots);
-+		status = -EINVAL;
-+		goto bail;
-+	}
-+
 +	init_waitqueue_head(&csb->checkpoint_event);
 +	atomic_set(&csb->needs_checkpoint, 0);
 +
-+	csb->s_atime_quantum = CMFS_DEFAULT_ATIME_QUNATUM;
++	csb->s_atime_quantum = CMFS_DEFAULT_ATIME_QUANTUM;
 +	csb->slot_num = CMFS_INVALID_SLOT;
-+	csb->lcoal_alloc_state = CMFS_LA_UNUSED;
++	csb->local_alloc_state = CMFS_LA_UNUSED;
 +	csb->local_alloc_bh = NULL;
-+	INIT_DELAYED_WORK(*csb->la_enable_wq, cmfs_la_enable_worker);
++	INIT_DELAYED_WORK(&csb->la_enable_wq, cmfs_la_enable_worker);
 +	init_waitqueue_head(&csb->csb_mount_event);
 +
 +	csb->vol_label = kmalloc(CMFS_MAX_VOL_LABEL_LEN, GFP_KERNEL);
@@ -604,17 +1039,17 @@ Index: linux-cmfs/fs/cmfs/super.c
 +		status = -ENOMEM;
 +		goto bail;
 +	}
-+	csb->jouranl = journal;
-+	jouranl->j_csb = csb;
++	csb->journal = journal;
++	journal->j_csb = csb;
 +
 +	atomic_set(&journal->j_num_trans, 0);
 +	init_rwsem(&journal->j_trans_barrier);
-+	init_waitqueue_head(&jouranl->j_checkpointed);
++	init_waitqueue_head(&journal->j_checkpointed);
 +	spin_lock_init(&journal->j_lock);
 +	journal->j_trans_id = (unsigned long)1;
-+	INIT_LIST_HEAD(&jouranl->j_la_cleanups);
-+	INIT_WORK(&jouranl->j_recovery_work, cmfs_complete_recovery);
-+	jouranl->j_state = CMFS_JOURNAL_FREE;
++	INIT_LIST_HEAD(&journal->j_la_cleanups);
++	INIT_WORK(&journal->j_recovery_work, cmfs_complete_recovery);
++	journal->j_state = CMFS_JOURNAL_FREE;
 +
 +	INIT_WORK(&csb->dentry_lock_work, cmfs_drop_dl_inodes);
 +	csb->dentry_lock_list = NULL;
@@ -661,7 +1096,7 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	csb->vol_label[CMFS_MAX_VOL_LABEL_LEN - 1] = '\0';
 +	csb->root_blkno = le64_to_cpu(di->id2.i_super.s_root_blkno);
 +	csb->system_dir_blkno = le64_to_cpu(di->id2.i_super.s_system_dir_blkno);
-+	cbs->first_cluster_group_blkno =
++	csb->first_cluster_group_blkno =
 +		le64_to_cpu(di->id2.i_super.s_first_cluster_group);
 +	csb->fs_generation = le32_to_cpu(di->i_fs_generation);
 +	csb->uuid_hash = le32_to_cpu(di->id2.i_super.s_uuid_hash);
@@ -692,44 +1127,6 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	return status;
 +}
 +
-+static void cmfs_release_system_inodes(struct cmfs_super *csb)
-+{
-+	int i;
-+	struct inode *inode;
-+
-+	for (i = 0; i < NUM_GLOBAL_SYSTEM_INODES; i++) {
-+		inode = csb->global_system_inodes[i];
-+		if (inode) {
-+			iput(inode);
-+			csb->global_system_inodes[i] = NULL;
-+		}
-+	}
-+
-+	inode = csb->sys_root_inode;
-+	if (inode) {
-+		iput(inode);
-+		csb->sys_root_inode = NULL;
-+	}
-+
-+	inode = csb->root_inode;
-+	if (inode) {
-+		iput(inode);
-+		csb->root_inode = NULL;
-+	}
-+
-+	if (!csb->local_system_inodes)
-+		return;
-+
-+	for (i = 0; i < NUM_LOCAL_SYSTEM_INODES; i++) {
-+		if (csb->local_system_inodes[i]) {
-+			iput(csb->local_system_inodes[i]);
-+			csb->local_system_inodes[i] = NULL;
-+		}
-+	}
-+
-+	kfree(csb->local_system_inodes);
-+	csb->local_system_inodes = NULL;
-+}
 +
 +static int cmfs_init_local_system_inodes(struct cmfs_super *csb)
 +{
@@ -772,7 +1169,7 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	/* init journal object */
 +	status = cmfs_journal_init(csb->journal, &dirty);
 +	if (status < 0) {
-+		mlog(ML_ERROR, "Could not initialize jouranl!\n");
++		mlog(ML_ERROR, "Could not initialize journal!\n");
 +		goto finally;
 +	}
 +
@@ -1090,3 +1487,799 @@ Index: linux-cmfs/fs/cmfs/ver.h
 +void cmfs_print_version(void);
 +
 +#endif /* CMFS_VER_H */
+Index: linux-cmfs/fs/cmfs/cmfs_fs.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/cmfs_fs.h
+@@ -0,0 +1,521 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * cmfs_fs.h
++ * (Copied and modified from fs/ocfs2/ocfs2_fs.h)
++ *
++ * On-disk structures for CMFS.
++ *
++ * Copyright (C) 2002, 2004 Oracle. All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License, version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_FS_H
++#define CMFS_FS_H
++
++/* Version */
++#define CMFS_MAJOR_REV_LEVEL		0
++#define CMFS_MINOR_REV_LEVEL		1
++
++/* XXX: currently hard code to 2 */
++#define CMFS_PER_CPU_NUM		2
++/*
++ * A CMFS volume starts this way:
++ * Sector 0: Valid cmfs_vol_disk_hdr
++ * Sector 1: Valid cmfs_vol_label
++ * Block CMFS_SUPER_BLOCK_BLKNO: CMFS superblock
++ *
++ * All other structures are found from the superblock information.
++ *
++ * CMFS_SUPER_BLOCK_BLKNO is in blocks other than sectors, it is
++ * 4096 bytes into disk/partition.
++ */
++#define CMFS_SUPER_BLOCK_BLKNO		2
++
++#define CMFS_MAX_VOL_SIGNATURE_LEN	128
++#define CMFS_MAX_MOUNT_POINT_LEN	128
++#define CMFS_MAX_VOL_LABEL_LEN		 64
++#define CMFS_MAX_VOL_ID_LENGTH		 16
++#define CMFS_VOL_UUID_LEN		 16
++#define CMFS_MAX_FILENAME_LEN		255
++
++/* Slot map indicator for an empty slot */
++#define CMFS_INVALID_SLOT		-1
++#define CMFS_MAX_SLOTS			255
++
++/*
++ * Min block size = Max block size = 4KB
++ * Min cluster size: 4KB
++ * Max cluster size: 32MB
++ */
++#define CMFS_MIN_CLUSTERSIZE		4096
++#define CMFS_MIN_CLUSTERSIZE_BITS	12
++#define CMFS_MAX_CLUSTERSIZE		(32*(1<<20))
++#define CMFS_MAX_CLUSTERSIZE_BITS	25
++#define CMFS_DEFAULT_CLUSTERSIZE	(1<<20)
++#define CMFS_MAX_BLOCKSIZE		CMFS_MIN_CLUSTERSIZE
++#define CMFS_MIN_BLOCKSIZE		CMFS_MAX_BLOCKSIZE
++
++/* Signature strings */
++#define CMFS_SUPER_BLOCK_SIGNATURE	"CMFSV1"
++#define CMFS_INODE_SIGNATURE		"INODE01"
++#define CMFS_EXTENT_BLOCK_SIGNATURE	"EXBLK01"
++#define CMFS_GROUP_DESC_SIGNATURE	"GROUP01"
++#define CMFS_DIR_TRAILER_SIGNATURE	"DIRTRL1"
++
++/*
++ * Flags on cmfs_dinode.i_flags
++ */
++#define CMFS_VALID_FL		(0x00000001)	/* Inode is valid */
++#define CMFS_UNUSED1_FL		(0x00000002)
++#define CMFS_ORPHANED_FL	(0x00000004)	/* On the orphan list */
++#define CMFS_UNUSED2_FL		(0x00000008)
++/* System inode flags */
++#define CMFS_SYSTEM_FL		(0x00000010)	/* System inode */
++#define CMFS_SUPER_BLOCK_FL	(0x00000020)	/* Super block */
++#define CMFS_LOCAL_ALLOC_FL	(0x00000040)	/* Slot local alloc bitmap */
++#define CMFS_BITMAP_FL		(0x00000080)	/* Allocation bitmap */
++#define CMFS_JOURNAL_FL		(0x00000100)	/* Journal */
++#define CMFS_CHAIN_FL		(0x00000200)	/* Chain allocator */
++#define CMFS_DEALLOC_FL		(0x00000400)	/* Truncate log */
++
++/*
++ * Flags on cmfs_dinode.i_dyn_features
++ *
++ * These can change much more often than i_flags. When adding
++ * flags, keep in mind that i_dyn_features in only 16 bits
++ * wide.
++ *
++ * XXX: Currently most of them will not be supported
++ */
++#define CMFS_INLINE_DATA_FL	(0x0001)	/* Data stored in inode block */
++#define CMFS_HAS_XATTR_FL	(0x0002)
++#define CMFS_INLINE_XATTR_FL	(0x0004)
++#define CMFS_INDEXED_DIR_FL	(0x0008)
++#define CMFS_HAS_REFCOUNT_FL	(0x0010)
++
++/*
++ * CMFS directory file types. Only the low 3 bits are used.
++ * The other bits are reserved now
++ */
++#define CMFS_FT_UNKNOWN		0
++#define CMFS_FT_REG_FILE	1
++#define CMFS_FT_DIR		2
++#define CMFS_FT_CHRDEV		3
++#define CMFS_FT_BLKDEV		4
++#define CMFS_FT_FIFO		5
++#define CMFS_FT_SOCK		6
++#define CMFS_FT_SYMLINK		7
++
++#define CMFS_FT_MAX		8
++
++/*
++ * Directory entry related stuffs
++ *
++ * CMFS_DIR_PAD defines the directory entries boundaries
++ * Note: it must be a multiple of 4
++ */
++#define CMFS_DIR_PAD			4
++#define CMFS_DIR_ROUND			(CMFS_DIR_PAD - 1)
++#define CMFS_DIR_MEMBER_LEN		offsetof(struct cmfs_dir_entry, name)
++#define CMFS_DIR_REC_LEN(name_len)	(((name_len) + CMFS_DIR_MEMBER_LEN + \
++					  CMFS_DIR_ROUND) & \
++					 ~CMFS_DIR_ROUND)
++#define CMFS_DIR_MIN_REC_LEN		CMFS_DIR_REC_LEN(1)
++
++#define CMFS_LINK_MAX		32000
++#define CMFS_DX_LINK_MAX	((1U<<31) - 1U)
++#define CMFS_LINKS_HI_SHIFT	16
++#define CMFS_DX_ENTRIES_MAX	(0xffffffffU)
++
++
++#define CMFS_RAW_SB(dinode)	(&((dinode)->id2.i_super))
++#define CMFS_HAS_COMPAT_FEATURE(sb, mask)		\
++	(CMFS_SB(sb)->s_feature_compat & (mask))
++#define CMFS_HAS_RO_COMPAT_FEATURE(sb,mask)		\
++	(CMFS_SB(sb)->s_feature_ro_compat & (mask))
++#define CMFS_HAS_INCOMPAT_FEATURE(sb,mask)		\
++	(CMFS_SB(sb)->s_feature_incompat & (mask))
++#define CMFS_SET_COMPAT_FEATURE(sb,mask)		\
++	CMFS_SB(sb)->s_feature_compat |= (mask)
++#define CMFS_SET_RO_COMPAT_FEATURE(sb,mask)		\
++	CMFS_SB(sb)->s_feature_ro_compat |= (mask)
++#define CMFS_SET_INCOMPAT_FEATURE(sb,mask)		\
++	CMFS_SB(sb)->s_feature_incompat |= (mask)
++#define CMFS_CLEAR_COMPAT_FEATURE(sb,mask)		\
++	CMFS_SB(sb)->s_feature_compat &= ~(mask)
++#define CMFS_CLEAR_RO_COMPAT_FEATURE(sb,mask)		\
++	CMFS_SB(sb)->s_feature_ro_compat &= ~(mask)
++#define CMFS_CLEAR_INCOMPAT_FEATURE(sb,mask)		\
++	CMFS_SB(sb)->s_feature_incompat &= ~(mask)
++
++
++/* Compatibility flags */
++#define CMFS_FEATURE_COMPAT_BACKUP_SB		0x0001
++#define CMFS_FEATURE_COMPAT_JBD2_SB		0x0002
++#define CMFS_FEATURE_COMPAT_INLINE_DATA		0x0004
++#define CMFS_FEATURE_COMPAT_META_ECC		0x0008
++#define CMFS_FEATURE_COMPAT_INDEXED_DIRS	0x0010
++#define CMFS_FEATURE_COMPAT_REFCOUNT_TREE	0x0020
++#define CMFS_FEATURE_COMPAT_UNWRITTEN		0x0040
++#define CMFS_FEATURE_COMPAT_TUNEFS_INPROG	0x0080
++#define CMFS_FEATURE_COMPAT_RESIZE_INPROG	0x0100
++
++
++#define CMFS_FEATURE_COMPAT_SUPP	(CMFS_FEATURE_COMPAT_BACKUP_SB \
++					 | CMFS_FEATURE_COMPAT_JBD2_SB \
++					 | CMFS_FEATURE_COMPAT_INLINE_DATA \
++	      				 | CMFS_FEATURE_COMPAT_META_ECC \
++					 | CMFS_FEATURE_COMPAT_INDEXED_DIRS \
++					 | CMFS_FEATURE_COMPAT_REFCOUNT_TREE \
++					 | CMFS_FEATURE_COMPAT_UNWRITTEN)
++#define CMFS_FEATURE_INCOMPAT_SUPP	0x0
++#define CMFS_FEATURE_RO_COMPAT_SUPP	0x0
++
++/* System file index */
++enum {
++	BAD_BLOCK_SYSTEM_INODE = 0,
++	GLOBAL_INODE_ALLOC_SYSTEM_INODE,
++#define CMFS_FIRST_ONLINE_SYSTEM_INODE GLOBAL_INODE_ALLOC_SYSTEM_INODE
++	GLOBAL_BITMAP_SYSTEM_INODE,
++#define CMFS_LAST_GLOBAL_SYSTEM_INODE GLOBAL_BITMAP_SYSTEM_INODE
++//	ORPHAN_DIR_SYSTEM_INODE,
++#define CMFS_FIRST_LOCAL_SYSTEM_INODE EXTENT_ALLOC_SYSTEM_INODE
++	EXTENT_ALLOC_SYSTEM_INODE,
++	INODE_ALLOC_SYSTEM_INODE,
++	JOURNAL_SYSTEM_INODE,
++	LOCAL_ALLOC_SYSTEM_INODE,
++	TRUNCATE_LOG_SYSTEM_INODE,
++#define CMFS_LAST_LOCAL_SYSTEM_INODE TRUNCATE_LOG_SYSTEM_INODE
++	NUM_SYSTEM_INODES
++};
++#define NUM_GLOBAL_SYSTEM_INODES CMFS_FIRST_LOCAL_SYSTEM_INODE
++#define NUM_LOCAL_SYSTEM_INODES \
++		(NUM_SYSTEM_INODES - CMFS_FIRST_LOCAL_SYSTEM_INODE)
++
++/*
++ * CMFS volume header, lives at sector 0.
++ */
++struct cmfs_vol_disk_hdr {
++	u8 signature[CMFS_MAX_VOL_SIGNATURE_LEN];
++	u8 mount_point[CMFS_MAX_MOUNT_POINT_LEN];
++};
++
++/*
++ * CMFS volume label, lives at sector 1.
++ */
++struct cmfs_vol_label {
++	u8	label[CMFS_MAX_VOL_LABEL_LEN];
++	__le16	label_len;
++	u8	vol_id[CMFS_MAX_VOL_ID_LENGTH];
++	__le16	vol_id_len;
++};
++
++/*
++ * Block checking structure. This is used in metadata to validate the
++ * contents. If CMFS_FEATURE_INCOMPAT_META_ECC is not set, it is all
++ * zeros.
++ */
++struct cmfs_block_check {
++/*00*/	__le32 bc_crc32e;
++	__le16 bc_ecc;
++	__le16 bc_reserved1;
++/*08*/
++};
++
++/*
++ * On disk extent record for CMFS
++ * It describes a range of blocks on disk.
++ *
++ * Length fields are devided into interior and leaf node version.
++ * This leaves room for a flags field (CMFS_EXT_*) in the leaf nodes.
++ */
++struct cmfs_extent_rec {
++/*00*/	__le64 e_cpos;		/* Offset into the file, in clusters */
++/*08*/	__le64 e_blkno;		/* Physical disk offset, in blocks */
++/*10*/	union {
++		__le64 e_int_clusters;	/* Clusters covered by all children */
++//		__le64 e_int_blocks;	/* blocks covered by all children */
++		struct {
++			__le32 e_leaf_blocks;	/* blocks covered by this extent
++		       				   for 4KB block, the max length
++						   of single extent is 16TB */
++			u8	e_flags;	/* extent flags */
++			u8	e_reserved1;
++			__le16	e_reserved2;
++			__le64	e_reserved3;
++		};
++	};
++/*20*/
++};
++
++/*
++ * On disk extent list for CMFS (node in teh tree). Note that this
++ * is contained inside cmfs_dinode or cmfs_extent_block, so the
++ * offsets are relative to cmfs_dinode.id2.i_list or
++ * cmfs_extent_block.h_list, respectively.
++ */
++struct cmfs_extent_list {
++/*00*/	__le16 l_tree_depth;	/* Extent tree depth from this point.
++				   0 means data extents hang directly
++				   off this header (a leaf)
++				   NOTE: the high 8 bits cannot be
++				   used - tree_depth is never that big.
++				 */
++	__le16 l_count;		/* Number of extent records */
++	__le16 l_next_free_rec;	/* Next unused extent slot */
++	__le16 l_reserved1;
++/*10*/	__le64 l_reserved2[3];	/* Pad to sizeof(cmfs_extent_rec) */
++/*20*/	struct cmfs_extent_rec l_recs[0];	/* Extent records */
++};
++
++/*
++ * On disk chain record format within chain list for CMFS.
++ */
++struct cmfs_chain_rec {
++/*00*/	__le32 c_free;	/* Number of free bits in this chain */
++	__le32 c_total;	/* Number of total bits in this chain */
++	__le64 c_blkno;	/* Physical disk offset (blocks) of 1st group */
++/*10*/
++};
++
++/*
++ * On disk allocation chain list for CMFS. Note that this is
++ * contained inside cmfs_inode, so the offsets are relative to
++ * cmfs_dinode.id2.i_chain.
++ */
++struct cmfs_chain_list {
++/*00*/	__le16 cl_cpg;			/* Clusters per Block Group */
++	__le16 cl_bpc;			/* Bits per Cluster */
++	__le16 cl_count;		/* Total chains in this list */
++	__le16 cl_next_free_rec;	/* Next unused chain slot */
++	__le64 cl_reserved1;
++/*10*/	struct cmfs_chain_rec cl_recs[0];	/* Chain records */
++};
++
++/*
++ * Local allocation bitmap for CMFS per-cpu slots
++ * Note that it exists inside cmfs_dinode, so all offsets
++ * are relative to the start of cmfs_dinode.id2.
++ */
++struct cmfs_local_alloc {
++/*00*/	__le32 la_bm_off;	/* Starting bit offset in main bitmap */
++	__le16 la_size;		/* Size of included bitmap, in bytes */
++	__le16 la_reserved1[5];
++/*10*/	u8	la_bitmap[0];
++};
++
++/*
++ * On disk truncate record format for truncate log
++ */
++struct cmfs_truncate_rec {
++	__le32 t_start;		/* 1st cluster in this log */
++	__le32 t_clusters;	/* Number of total clusters convered */
++};
++
++/*
++ * On disk deallocation log for CMFS. Note that this is
++ * contained inside cmfs_dinode, so the offsets are
++ * relative to cmfs_dinode.id2.i_dealloc.
++ */
++struct cmfs_truncate_log {
++/*00*/	__le16 tl_count;			/* Total records in this log*/
++	__le16 tl_used;				/* Number of records in use*/
++	__le16 tl_reserved1[6];
++/*10*/	struct cmfs_truncate_rec tl_recs[0];	/* Truncate records */
++};
++
++/*
++ * Data-in-inode header. This is only used for i_dyn_features
++ * has CMFS_INLINE_DATA_FL set
++ */
++struct cmfs_inline_data {
++/*00*/	__le16	id_count;	/* Number of bytes can be used for data,
++				   starting at id_data */
++	__le16	id_reserved1[3];
++/*08*/	u8	id_data[0];	/* Start of user data */
++};
++
++/*
++ * On disk superblock for CMFS
++ * Note that it is contained inside cmfs_dinode, so all offsets
++ * are relative to the start of cmfs_dinode.id2.
++ */
++struct cmfs_super_block {
++/*00*/	__le16	s_major_rev_level;
++	__le16	s_minor_rev_level;
++	__le16	s_mnt_count;
++	__le16	s_max_mnt_count;
++	__le16	s_state;
++	__le16	s_errors;
++	__le32	s_checkinterval;
++/*10*/	__le64	s_lastcheck;
++	__le32	s_creator_os;
++	__le32	s_feature_compat;
++/*20*/	__le32	s_feature_incompat;
++	__le32	s_feature_ro_compat;
++	__le64	s_root_blkno;
++/*30*/	__le64	s_system_dir_blkno;
++	__le32	s_blocksize_bits;
++	__le32	s_clustersize_bits;
++/*40*/	u8	s_label[CMFS_MAX_VOL_LABEL_LEN];
++/*80*/	u8	s_uuid[CMFS_VOL_UUID_LEN];
++/*90*/	__le16	s_tunefs_flag;
++	__le16	s_xattr_inline_size;
++	__le32	s_uuid_hash;
++	__le64	s_first_cluster_group;
++/*A0*/
++/* XXXX: should pad all rest space of dinode which contains the super block to zero */
++};
++
++/*
++ * On disk CMFS inode format
++ */
++struct cmfs_dinode {
++/*00*/	u8	i_signature[8];		/* Signature for validation */
++	__le32	i_generation;		/* Generation number */
++	__le32	i_links_count;		/* Links count */
++/*10*/	__le32	i_uid;			/* Owner UID */
++	__le32	i_gid;			/* Owner GID */
++	__le64	i_size;
++/*20*/	__le64	i_atime;
++	__le64	i_ctime;
++/*30*/	__le64	i_mtime;
++	__le64	i_dtime;
++/*40*/	__le32	i_flags;
++	__le16	i_mode;
++	__le16	i_suballoc_slot;		/* Slot suballocator this inode
++					   belongs to */
++	__le64	i_blkno;
++/*50*/	__le32	i_clusters;		/* Cluster count */
++	__le32	i_fs_generation;
++	__le64	i_last_eb_blk;
++/*60*/	__le32	i_atime_nsec;
++	__le32	i_ctime_nsec;
++	__le32	i_mtime_nsec;
++	__le32	i_attr;
++/*70*/	__le64	i_xattr_loc;
++	__le64	i_refcount_loc;
++/*80*/	__le64	i_suballoc_loc;
++/*88*/ struct cmfs_block_check i_check;
++/*90*/	__le16	i_dyn_features;
++	__le16	i_xattr_inline_size;
++	__le16	i_suballoc_bit;	/* XXX: will move it to the location after i_suballoc_slot */
++	__le16	i_reserved1[1];
++/*98*/	union {
++		__le64 i_pad1;
++		struct {
++			__le64 i_rdev;	/* Raw device number */
++		} dev1;
++		struct {
++			__le32 i_used;
++			__le32 i_total;
++		} bitmap1;
++		struct {
++			__le32 ij_flags;
++			__le32 ij_recovery_generation;
++		} journal1;
++	} id1;
++/*A0*/ union {
++		struct cmfs_super_block		i_super;
++		struct cmfs_local_alloc		i_lab;
++		struct cmfs_chain_list		i_chain;
++		struct cmfs_extent_list		i_list;
++		struct cmfs_truncate_log	i_dealloc;
++		struct cmfs_inline_data		i_data;
++		u8				i_symlink[0];
++	} id2;
++/* Actual on-disk size is one block (4KB) */
++
++};
++
++/*
++ * On disk directory entry structure for CMFS
++ *
++ * Packed as this structure is variable size and accessed
++ * unsligned on 32/64-bit platform
++ */
++struct cmfs_dir_entry {
++/*00*/	__le64	inode;				/* Inode number */
++	__le16	rec_len;				/* Directory entry length */
++	u8	name_len;			/* Name length */
++	u8	file_type;
++/*0c*/	char name[CMFS_MAX_FILENAME_LEN];	/* File name */
++/* Actual on-disk length specified by rec_len */
++} __attribute__((packed));
++
++/*
++ * Per-block record for the unindexed directry btree.
++ * This is carefully crafted so that the rec_len and name_len records
++ * of a cmfs_dir_entry are mirrored. That way, the directory manipulation
++ * code needs a minial amount of update.
++ *
++ * NOTE: Keep this structure aligned to a multiple of 4 bytes.
++ */
++struct cmfs_dir_block_trailer {
++/*00*/	__le64	db_compat_inode;	/* Always zero. Was inode */
++	__le16	db_compat_rec_len;	/* Backwards compatible with
++					   cmfs_dir_entry */
++	u8	db_compat_name_len;	/* Always zero. Was name_len */
++	u8	db_reserved0;
++	__le16	db_reserved1;
++	__le16	db_free_rec_len;	/* Size of largest empty hole
++					   in this block. */
++/*10*/	u8	db_signature[8];	/* Signature for verification */
++	__le64	db_reserved2;
++/*20*/	__le64	db_free_next;		/* Next block in list */
++	__le64	db_blkno;		/* Offset o disk, in blocks */
++/*30*/	__le64	db_parent_dinode;	/* dinode which owns me, in
++					   blocks */
++	__le64	db_reserved3;
++/*40*/	struct cmfs_block_check db_check; /* Error checking */
++};
++
++/*
++ * Largest bigmap for a block (suballocator) group in bytes.
++ * This limit does not affect cluster groups (global allocator).
++ * Cluster group bitmaps run to the end of the block.
++ */
++#define CMFS_MAX_BG_BITMAP_SIZE		256
++/*
++ * On disk allocator group structure for CMFS
++ */
++struct cmfs_group_desc {
++/*00*/	u8	bg_signature[8];		/* Signature for validation */
++	__le16	bg_size;			/* Size of included bitmap in bytes */
++	__le16	bg_bits;			/* Bits represented by this group */
++	__le16	bg_free_bits_count;		/* Free bits count */
++	__le16	bg_chain;			/* What chain I am in */
++/*10*/	__le32	bg_generation;
++	__le32	bg_reserved1;
++	__le64	bg_next_group;			/* Next group in my list, in blocks */
++/*20*/	__le64	bg_parent_dinode;		/* dinode which owns me, in blocks */
++	__le64	bg_blkno;			/* Where desc stored on disk, in blocks */
++/*30*/	struct cmfs_block_check bg_check;
++	__le64	bg_reserved2;
++/*40*/	union {
++		u8	bg_bitmap[0];
++		struct {
++/* XXX: remove this latter ? */
++			u8	bg_bitmap_filler[CMFS_MAX_BG_BITMAP_SIZE];
++/*140*/			struct cmfs_extent_list bg_list;
++		};
++	};
++/* Actual on-disk size is one block */
++};
++
++#endif /* CMFS_FS_H */
+Index: linux-cmfs/fs/cmfs/export.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/export.h
+@@ -0,0 +1,35 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * export.h
++ *
++ * Function prototypes
++ * (Copied and modified from fs/ocfs2/export.h)
++ *
++ * Copyright (C) 2002, 2005 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_EXPORT_H
++#define CMFS_EXPORT_H
++
++#include <linux/exportfs.h>
++
++extern const struct export_operations cmfs_export_ops;
++
++#endif /* CMFS_EXPORT_H */
+Index: linux-cmfs/fs/cmfs/inode.c
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/inode.c
+@@ -0,0 +1,9 @@
++
++
++struct inode *cmfs_iget(struct cmfs_super *csb,
++			u64 blkno,
++			unsigned flags,
++			int sysfile_type)
++{
++	return NULL:
++}
+Index: linux-cmfs/fs/cmfs/inode.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/inode.h
+@@ -0,0 +1,55 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * inode.h
++ *
++ * Function prototypes
++ * (Copied and modified from fs/ocfs2/inode.h)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_INODE_H
++#define CMFS_INODE_H
++
++/* CMFS Inode Private Data */
++struct cmfs_inode_info
++{
++	u64		ip_blkno;
++	struct inode	vfs_inode;
++};
++
++
++/* Flags for cmfs_iget() */
++#define CMFS_FI_FLAG_SYSFILE		0x1
++#define CMFS_FI_FLAG_ORPHAN_RECOVERY	0x2
++
++struct inode *cmfs_iget(struct cmfs_super *csb,
++			u64 blkno,
++			unsigned flags,
++			int sysfile_type);
++
++
++
++static inline struct cmfs_inode_info *CMFS_I(struct inode *inode)
++{
++	return container_of(inode, struct cmfs_inode_info, vfs_inode);
++}
++
++#endif /* CMFS_INODE_H */
+Index: linux-cmfs/fs/cmfs/journal.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/journal.h
+@@ -0,0 +1,74 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * journal.h
++ *
++ * Defines journalling api and structures.
++ * (Copied and modified from fs/ocfs2/journal.h)
++ *
++ * Copyright (C) 2003, 2005 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_JOURNAL_H
++#define CMFS_JOURNAL_H
++
++#include <linux/fs.h>
++#include <linux/jbd2.h>
++
++enum cmfs_journal_state {
++	CMFS_JOURNAL_FREE = 0,
++	CMFS_JOURNAL_LOADED,
++	CMFS_JOURNAL_IN_SHUTDOWN,
++};
++
++struct cmfs_super;
++struct cmfs_dinode;
++
++struct cmfs_journal {
++	enum cmfs_journal_state	j_state;
++	journal_t                 *j_journal; /* The kernels journal type */
++	struct inode              *j_inode;   /* Kernel inode pointing to
++					       * this journal             */
++	struct cmfs_super        *j_csb;     /* pointer to the super
++					       * block for the node
++					       * we're currently
++					       * running on -- not
++					       * necessarily the super
++					       * block from the node
++					       * which we usually run
++					       * from (recovery,
++					       * etc)                     */
++	struct buffer_head        *j_bh;      /* Journal disk inode block */
++	atomic_t                  j_num_trans; /* Number of transactions
++					        * currently in the system. */
++	spinlock_t                j_lock;
++	unsigned long             j_trans_id;
++	struct rw_semaphore       j_trans_barrier;
++	wait_queue_head_t         j_checkpointed;
++
++	/* both fields protected by j_lock*/
++	struct list_head          j_la_cleanups;
++	struct work_struct        j_recovery_work;
++};
++
++
++int cmfs_check_journal(struct cmfs_super *csb);
++void cmfs_complete_recovery(struct work_struct *work);
++
++#endif /* CMFS_JOURNAL_H */
+Index: linux-cmfs/fs/cmfs/localalloc.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/localalloc.h
+@@ -0,0 +1,34 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * localalloc.h
++ *
++ * Function prototypes
++ * (Copied and modified from fs/ocfs2/localalloc.h)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_LOCALALLOC_H
++#define CMFS_LOCALALLOC_H
++
++void cmfs_la_set_sizes(struct cmfs_super *osb, int requested_mb);
++void cmfs_la_enable_worker(struct work_struct *work);
++
++#endif /* CMFS_LOCALALLOC_H */
+Index: linux-cmfs/fs/cmfs/sysfile.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/sysfile.h
+@@ -0,0 +1,33 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * sysfile.h
++ *
++ * Function prototypes
++ * (Copied and modified from fs/cofs2/sysfile.h)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_SYSFILE_H
++#define CMFS_SYSFILE_H
++
++struct inode * cmfs_get_system_file_inode(struct cmfs_super *csb, int type);
++
++#endif /* CMFS_SYSFILE_H */
