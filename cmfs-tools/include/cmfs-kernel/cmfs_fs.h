@@ -6,17 +6,16 @@
  *
  * On-disk structures for CMFS.
  *
- * Copyright (C) 2002, 2004 Oracle.All rights reserved.
- * CMFS modification, Copyright (C) 2012, Coly Li <i@coly.li>
- *
+ * Copyright (C) 2002, 2004 Oracle. All rights reserved.
+ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public
- * License, version 2,as published by the Free Software Foundation.
+ * License, version 2, as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the GNU
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
  * General Public License for more details.
  *
  * You should have received a copy of the GNU General Public
@@ -42,7 +41,7 @@
  * A CMFS volume starts this way:
  * Sector 0: Valid cmfs_vol_disk_hdr
  * Sector 1: Valid cmfs_vol_label
- * Block CMFS_SUPER_BLOCK_BLKNO: CMFS usperblock.
+ * Block CMFS_SUPER_BLOCK_BLKNO: CMFS superblock
  *
  * All other structures are found from the superblock information.
  *
@@ -60,7 +59,7 @@
 
 /* Slot map indicator for an empty slot */
 #define CMFS_INVALID_SLOT		-1
-#define CMFS_MAX_SLOTS		255
+#define CMFS_MAX_SLOTS			255
 
 /*
  * Min block size = Max block size = 4KB
@@ -171,14 +170,20 @@ enum {
 	BAD_BLOCK_SYSTEM_INODE = 0,
 	GLOBAL_INODE_ALLOC_SYSTEM_INODE,
 	GLOBAL_BITMAP_SYSTEM_INODE,
-	ORPHAN_DIR_SYSTEM_INODE,
+#define CMFS_LAST_GLOBAL_SYSTEM_INODE GLOBAL_BITMAP_SYSTEM_INODE
+//	ORPHAN_DIR_SYSTEM_INODE,
+#define CMFS_FIRST_LOCAL_SYSTEM_INODE EXTENT_ALLOC_SYSTEM_INODE
 	EXTENT_ALLOC_SYSTEM_INODE,
 	INODE_ALLOC_SYSTEM_INODE,
 	JOURNAL_SYSTEM_INODE,
 	LOCAL_ALLOC_SYSTEM_INODE,
 	TRUNCATE_LOG_SYSTEM_INODE,
+#define CMFS_LAST_LOCAL_SYSTEM_INODE TRUNCATE_LOG_SYSTEM_INODE
 	NUM_SYSTEM_INODES
 };
+#define NUM_GLOBAL_SYSTEM_INODES CMFS_FIRST_LOCAL_SYSTEM_INODE
+#define NUM_LOCAL_SYSTEM_INODES \
+		(NUM_SYSTEM_INODES - CMFS_FIRST_LOCAL_SYSTEM_INODE)
 
 /*
  * CMFS volume header, lives at sector 0.
