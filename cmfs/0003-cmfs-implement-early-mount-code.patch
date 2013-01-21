@@ -1,12 +1,12 @@
 From: Coly Li <i@coly.li>
-Subject: [PATCH] cmfs: implement early mount code
+Subject: [PATCH] cmfs: mount/umount implementation
 
-This is a very early code for cmfs mount implementation.
-Currently this patch does not pass compiling, there are
+This is a very early code for cmfs mount/umount implementation.
+Currently this patch just passes gcc compiling, there are
 something more to add,
-1) mlog routines
+1) imeplent stub routines
 2) module_init/exit
-3) data structures copy from cmfs-tools
+3) no journal
 4) better text format to all source code files
 
 Signed-off-by: Coly Li <i@coly.li>
