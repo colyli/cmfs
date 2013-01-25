@@ -1,0 +1,128 @@
+From: Coly Li <i@coly.li>
+Subject: cmfs: no journal support
+
+CMFS is designed to work with/without jbd2 journal infrastructure.
+This patch implements no journal "feature" for CMFS.
+(currently the patch is not completed yet)
+
+Signed-off-by: Coly Li <i@coly.li>
+---
+Index: linux-cmfs/fs/cmfs/super.c
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/super.c
++++ linux-cmfs/fs/cmfs/super.c
+@@ -80,6 +80,29 @@ static const struct super_operations cmf
+ 	.free_cached_objects	= NULL,
+ };
+ 
++static const struct super_operations cmfs_nojournal_sops = {
++	.alloc_inode		= NULL,
++	.destroy_inode		= NULL,
++	.dirty_inode		= NULL,
++	.write_inode		= NULL,
++	.drop_inode		= NULL,
++	.evict_inode		= NULL,
++	.put_super		= NULL,
++	.sync_fs		= NULL,
++	.freeze_fs		= NULL,
++	.unfreeze_fs		= NULL,
++	.statfs			= NULL,
++	.remount_fs		= NULL,
++	.umount_begin		= NULL,
++	.show_options		= NULL,
++	.show_devname		= NULL,
++	.show_path		= NULL,
++	.show_stats		= NULL,
++	.bdev_try_to_free_page	= NULL,
++	.nr_cached_objects	= NULL,
++	.free_cached_objects	= NULL,
++};
++
+ enum {
+ 	opt_barrier = 0,
+ 	opt_err_panic,
+@@ -465,7 +488,7 @@ bail:
+ static int cmfs_initialize_super(struct super_block *sb,
+ 				 struct buffer_head *bh)
+ {
+-	int status;
++	int status, has_journal = 0;
+ 	int i, cbits, bbits;
+ 	__le32 uuid_net_key;
+ 	struct cmfs_dinode *di;
+@@ -482,8 +505,14 @@ static int cmfs_initialize_super(struct
+ 		goto bail;
+ 	}
+ 
++	if (CMFS_HAS_COMPAT_FEATURE(sb, CMFS_FEATURE_COMPAT_HAS_JOURNAL))
++		has_journal = 1;
++
+ 	sb->s_fs_info = csb;
+-	sb->s_op = &cmfs_sops;
++	if (has_journal)
++		sb->s_op = &cmfs_sops;
++	else
++		sb->s_op = &cmfs_nojournal_sops;
+ 	sb->s_d_op = &cmfs_dentry_ops;
+ 	sb->s_time_gran = 1;
+ 	sb->s_flags |= MS_NOATIME;
+@@ -550,31 +579,36 @@ static int cmfs_initialize_super(struct
+ 
+ 	get_random_bytes(&csb->s_next_generation, sizeof(u32));
+ 
+-	/* XXX: FIXME copied from OCFS2 code
+-	 * This should be done in ocfs2_journal_init(), but
+-	 * unknow ordering issues will cause the filesystem
+-	 * to crash. If anyone wants to figure out what part
+-	 * of the code referes to osb->journal before
+-	 * ocfs2_journal_init() is run, be my guest.
+-	 */
+-	/* initialize journal structure */
+-	journal = kzalloc(sizeof(struct cmfs_journal), GFP_KERNEL);
+-	if (!journal) {
+-		mlog(ML_ERROR, "unable to alloc journal.\n");
+-		status = -ENOMEM;
+-		goto bail;
++	if (has_journal) {
++		/* XXX: FIXME copied from OCFS2 code
++		 * This should be done in ocfs2_journal_init(), but
++		 * unknow ordering issues will cause the filesystem
++		 * to crash. If anyone wants to figure out what part
++		 * of the code referes to osb->journal before
++		 * ocfs2_journal_init() is run, be my guest.
++		 */
++		/* initialize journal structure */
++		journal = kzalloc(sizeof(struct cmfs_journal), GFP_KERNEL);
++		if (!journal) {
++			mlog(ML_ERROR, "unable to alloc journal.\n");
++			status = -ENOMEM;
++			goto bail;
++		}
++		journal->j_csb = csb;
++
++		atomic_set(&journal->j_num_trans, 0);
++		init_rwsem(&journal->j_trans_barrier);
++		init_waitqueue_head(&journal->j_checkpointed);
++		spin_lock_init(&journal->j_lock);
++		journal->j_trans_id = (unsigned long)1;
++		INIT_LIST_HEAD(&journal->j_la_cleanups);
++		INIT_WORK(&journal->j_recovery_work, cmfs_complete_recovery);
++		journal->j_state = CMFS_JOURNAL_FREE;
++	} else {
++		journal = NULL;
+ 	}
+-	csb->journal = journal;
+-	journal->j_csb = csb;
+ 
+-	atomic_set(&journal->j_num_trans, 0);
+-	init_rwsem(&journal->j_trans_barrier);
+-	init_waitqueue_head(&journal->j_checkpointed);
+-	spin_lock_init(&journal->j_lock);
+-	journal->j_trans_id = (unsigned long)1;
+-	INIT_LIST_HEAD(&journal->j_la_cleanups);
+-	INIT_WORK(&journal->j_recovery_work, cmfs_complete_recovery);
+-	journal->j_state = CMFS_JOURNAL_FREE;
++	csb->journal = journal;
+ 
+ 	INIT_WORK(&csb->dentry_lock_work, cmfs_drop_dl_inodes);
+ 	csb->dentry_lock_list = NULL;
