@@ -1,4 +1,4 @@
 0001-cmfs-Add-Kconfig-and-Makefile-entries-for-CMFS.patch
 0002-cmfs-mask-log.patch
 0003-cmfs-implement-early-mount-code.patch
-0004-cmfs-no-journal.patch
+0004-cmfs-jbd2-journal-support.patch
