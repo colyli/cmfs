@@ -1,0 +1,1071 @@
+From: Coly Li <i@coly.li>
+Subject: cmfs: no journal support
+
+CMFS is designed to work with/without jbd2 journal infrastructure.
+This patch implements no journal "feature" for CMFS.
+(currently the patch is not completed yet)
+
+Signed-off-by: Coly Li <i@coly.li>
+---
+Index: linux-cmfs/fs/cmfs/super.c
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/super.c
++++ linux-cmfs/fs/cmfs/super.c
+@@ -49,6 +49,15 @@
+ MODULE_AUTHOR("Coly Li <i@coly.li>");
+ MODULE_LICENSE("GPL");
+ 
++/*
++ * CMFS needs to schedule several different types of work which
++ * require disk I/O, recovery wait, etc. Since these types of
++ * work tend to be heavy we avoid using the kernel events
++ * workqueue and schedule on our own
++ */
++struct workqueue_struct *cmfs_wq = NULL;
++
++
+ struct mount_options {
+ 	unsigned long commit_interval;
+ 	unsigned long mount_opt;
+@@ -80,6 +89,29 @@ static const struct super_operations cmf
+ 	.free_cached_objects	= NULL,
+ };
+ 
++static const struct super_operations cmfs_nojournal_sops = {
++	.alloc_inode		= NULL,
++	.destroy_inode		= NULL,
++	.dirty_inode		= NULL,
++	.write_inode		= NULL,
++	.drop_inode		= NULL,
++	.evict_inode		= NULL,
++	.put_super		= NULL,
++	.sync_fs		= NULL,
++	.freeze_fs		= NULL,
++	.unfreeze_fs		= NULL,
++	.statfs			= NULL,
++	.remount_fs		= NULL,
++	.umount_begin		= NULL,
++	.show_options		= NULL,
++	.show_devname		= NULL,
++	.show_path		= NULL,
++	.show_stats		= NULL,
++	.bdev_try_to_free_page	= NULL,
++	.nr_cached_objects	= NULL,
++	.free_cached_objects	= NULL,
++};
++
+ enum {
+ 	opt_barrier = 0,
+ 	opt_err_panic,
+@@ -465,7 +497,7 @@ bail:
+ static int cmfs_initialize_super(struct super_block *sb,
+ 				 struct buffer_head *bh)
+ {
+-	int status;
++	int status, has_journal = 0;
+ 	int i, cbits, bbits;
+ 	__le32 uuid_net_key;
+ 	struct cmfs_dinode *di;
+@@ -482,8 +514,14 @@ static int cmfs_initialize_super(struct
+ 		goto bail;
+ 	}
+ 
++	if (CMFS_HAS_COMPAT_FEATURE(sb, CMFS_FEATURE_COMPAT_HAS_JOURNAL))
++		has_journal = 1;
++
+ 	sb->s_fs_info = csb;
+-	sb->s_op = &cmfs_sops;
++	if (has_journal)
++		sb->s_op = &cmfs_sops;
++	else
++		sb->s_op = &cmfs_nojournal_sops;
+ 	sb->s_d_op = &cmfs_dentry_ops;
+ 	sb->s_time_gran = 1;
+ 	sb->s_flags |= MS_NOATIME;
+@@ -550,31 +588,36 @@ static int cmfs_initialize_super(struct
+ 
+ 	get_random_bytes(&csb->s_next_generation, sizeof(u32));
+ 
+-	/* XXX: FIXME copied from OCFS2 code
+-	 * This should be done in ocfs2_journal_init(), but
+-	 * unknow ordering issues will cause the filesystem
+-	 * to crash. If anyone wants to figure out what part
+-	 * of the code referes to osb->journal before
+-	 * ocfs2_journal_init() is run, be my guest.
+-	 */
+-	/* initialize journal structure */
+-	journal = kzalloc(sizeof(struct cmfs_journal), GFP_KERNEL);
+-	if (!journal) {
+-		mlog(ML_ERROR, "unable to alloc journal.\n");
+-		status = -ENOMEM;
+-		goto bail;
++	if (has_journal) {
++		/* XXX: FIXME copied from OCFS2 code
++		 * This should be done in ocfs2_journal_init(), but
++		 * unknow ordering issues will cause the filesystem
++		 * to crash. If anyone wants to figure out what part
++		 * of the code referes to osb->journal before
++		 * ocfs2_journal_init() is run, be my guest.
++		 */
++		/* initialize journal structure */
++		journal = kzalloc(sizeof(struct cmfs_journal), GFP_KERNEL);
++		if (!journal) {
++			mlog(ML_ERROR, "unable to alloc journal.\n");
++			status = -ENOMEM;
++			goto bail;
++		}
++		journal->j_csb = csb;
++
++		atomic_set(&journal->j_num_trans, 0);
++		init_rwsem(&journal->j_trans_barrier);
++		init_waitqueue_head(&journal->j_checkpointed);
++		spin_lock_init(&journal->j_lock);
++		journal->j_trans_id = (unsigned long)1;
++		INIT_LIST_HEAD(&journal->j_la_cleanups);
++		INIT_WORK(&journal->j_recovery_work, cmfs_complete_recovery);
++		journal->j_state = CMFS_JOURNAL_FREE;
++	} else {
++		journal = NULL;
+ 	}
+-	csb->journal = journal;
+-	journal->j_csb = csb;
+ 
+-	atomic_set(&journal->j_num_trans, 0);
+-	init_rwsem(&journal->j_trans_barrier);
+-	init_waitqueue_head(&journal->j_checkpointed);
+-	spin_lock_init(&journal->j_lock);
+-	journal->j_trans_id = (unsigned long)1;
+-	INIT_LIST_HEAD(&journal->j_la_cleanups);
+-	INIT_WORK(&journal->j_recovery_work, cmfs_complete_recovery);
+-	journal->j_state = CMFS_JOURNAL_FREE;
++	csb->journal = journal;
+ 
+ 	INIT_WORK(&csb->dentry_lock_work, cmfs_drop_dl_inodes);
+ 	csb->dentry_lock_list = NULL;
+@@ -643,6 +686,7 @@ static int cmfs_initialize_super(struct
+ 	}
+ 
+ 	csb->bitmap_blkno = CMFS_I(inode)->ip_blkno;
++	csb->csb_clusters_at_boot = CMFS_I(inode)->ip_clusters;
+ 	iput(inode);
+ 
+ 	csb->bitmap_cpg = cmfs_group_bitmap_size(sb, 0) * 8;
+@@ -682,11 +726,35 @@ bail:
+ 
+ /*
+  * Make sure entire volume is addressable by our journal.
+- * Not implemented yet.
+  */
+ static int cmfs_journal_addressable(struct cmfs_super *csb)
+ {
+-	return -EINVAL;
++	int status = 0;
++	u64 max_block;
++	if (!CMFS_HAS_COMPAT_FEATURE(csb->sb,
++				    CMFS_FEATURE_COMPAT_HAS_JOURNAL))
++		goto out;
++
++	max_block = cmfs_clusters_to_blocks(csb->sb,
++					    csb->csb_clusters_at_boot) - 1;
++	/* 32-bit block number is always OK */
++	if (max_block <= (u32)~0UL)
++		goto out;
++
++	/* Volume is "huge", check if jbd2 is new enought to support it */
++	if (!jbd2_journal_check_used_features(csb->journal->j_journal,
++					      0, 0,
++					      JBD2_FEATURE_INCOMPAT_64BIT)) {
++		mlog(ML_ERROR,
++		     "The journal cannot address the entire volume. "
++		     "This should not happen because CMFS is \"block64\" "
++		     "enabled on default.");
++		status = -EINVAL;
++		goto out;
++	}
++
++out:
++	return status;
+ }
+ 
+ static int cmfs_check_volume(struct cmfs_super *csb)
+Index: linux-cmfs/fs/cmfs/inode.c
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/inode.c
++++ linux-cmfs/fs/cmfs/inode.c
+@@ -47,3 +47,16 @@ void cmfs_sync_blockdev(struct super_blo
+ {
+ 	sync_blockdev(sb->s_bdev);
+ }
++
++int cmfs_read_inode_block_full(struct inode *inode,
++			       struct buffer_head **bh,
++			       int flags)
++{
++	return -1;
++}
++
++int cmfs_read_inode_block(struct inode *inode,
++			  struct buffer_head **bh)
++{
++	return -1;
++}
+Index: linux-cmfs/fs/cmfs/journal.c
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/journal.c
++++ linux-cmfs/fs/cmfs/journal.c
+@@ -33,14 +33,57 @@
+ #include <linux/time.h>
+ #include <linux/random.h>
+ 
++#include "journal.h"
++#include "cmfs_fs.h"
+ #include "cmfs.h"
+ #include "masklog.h"
++#include "sysfile.h"
++#include "inode.h"
++#include "buffer_head_io.h"
++#include "super.h"
+ 
+ static int cmfs_read_journal_inode(struct cmfs_super *csb,
+ 				   struct buffer_head **bh,
+ 				   struct inode **ret_inode)
+ {
+-	return -1;
++	int status = -EACCES;
++	struct inode *inode = NULL;
++
++	/* no journal */
++	if (!CMFS_HAS_COMPAT_FEATURE(csb->sb,
++				    CMFS_FEATURE_COMPAT_HAS_JOURNAL)) {
++		if (bh)
++			*bh = NULL;
++		if (ret_inode)
++			*ret_inode = NULL;
++		return 0;
++	}
++
++	inode = cmfs_get_system_file_inode(csb, JOURNAL_SYSTEM_INODE);
++	if (!inode || is_bad_inode(inode)) {
++		mlog_errno(status);
++		goto bail;
++	}
++	SET_INODE_JOURNAL(inode);
++
++	status = cmfs_read_inode_block_full(inode, bh,
++					    CMFS_BH_IGNORE_CACHE);
++	if (status < 0) {
++		mlog_errno(status);
++		goto bail;
++	}
++
++	status = 0;
++
++bail:
++	if (inode) {
++		if (status || !ret_inode)
++			iput(inode);
++		else
++			*ret_inode = inode;
++	}
++
++	return status;
+ }
+ 
+ 
+@@ -55,6 +98,11 @@ int cmfs_check_journal(struct cmfs_super
+ 	struct cmfs_dinode *di;
+ 	int journal_dirty = 0;
+ 
++	/* no journal */
++	if (!CMFS_HAS_COMPAT_FEATURE(csb->sb,
++				     CMFS_FEATURE_COMPAT_HAS_JOURNAL))
++		return 0;
++
+ 	ret = cmfs_read_journal_inode(csb, &di_bh, NULL);
+ 	if (ret) {
+ 		mlog_errno(ret);
+@@ -78,34 +126,330 @@ void cmfs_complete_recovery(struct work_
+ 	return;
+ }
+ 
+-int cmfs_journal_init(struct cmfs_journal *jouranl, int *dirty)
++void cmfs_set_journal_params(struct cmfs_super *csb)
+ {
+-	*dirty = 1;
+-	return 0;
++	journal_t *journal = csb->journal->j_journal;
++	unsigned long commit_interval = CMFS_DEFAULT_COMMIT_INTERVAL;
++
++	if (csb->csb_commit_interval)
++		commit_interval = csb->csb_commit_interval;
++
++	write_lock(&journal->j_state_lock);
++	journal->j_commit_interval = commit_interval;
++	if (csb->s_mount_opt & CMFS_MOUNT_BARRIER)
++		journal->j_flags |= JBD2_BARRIER;
++	else
++		journal->j_flags &= ~JBD2_BARRIER;
++	write_unlock(&journal->j_state_lock);
++}
++
++int cmfs_journal_init(struct cmfs_journal *journal, int *dirty)
++{
++	int status = -1;
++	struct inode *inode = NULL; /* the journal inode */
++	journal_t *j_journal = NULL;
++	struct cmfs_dinode *di = NULL;
++	struct buffer_head *bh = NULL;
++	struct cmfs_super *csb;
++
++	/* no journal */
++	if (!journal) {
++		*dirty = 0;
++		return 0;
++	}
++
++	csb = journal->j_csb;
++
++	/* already have the inode for journal */
++	inode = cmfs_get_system_file_inode(csb, JOURNAL_SYSTEM_INODE);
++	if (inode == NULL) {
++		status = -EACCES;
++		mlog_errno(status);
++		goto done;
++	}
++	if (is_bad_inode(inode)) {
++		mlog(ML_ERROR, "access error (bad inode)\n");
++		iput(inode);
++		inode = NULL;
++		status = -EACCES;
++		goto done;
++	}
++
++	SET_INODE_JOURNAL(inode);
++	CMFS_I(inode)->ip_open_count++;
++
++	status = cmfs_read_inode_block(inode, &bh);
++	if (status < 0) {
++		if (status != -ERESTARTSYS)
++			mlog(ML_ERROR,
++			     "Could not read inode block for journal");
++		goto done;
++	}
++
++	di = (struct cmfs_dinode *)bh->b_data;
++
++	if (inode->i_size < CMFS_MIN_JOURNAL_SIZE) {
++		mlog(ML_ERROR,
++		     "Journal file size (%lld) is too small!\n",
++		     inode->i_size);
++		status = -EINVAL;
++		goto done;
++	}
++
++	/* call the kernel journal init routine now */
++	j_journal = jbd2_journal_init_inode(inode);
++	if (j_journal == NULL) {
++		mlog(ML_ERROR,
++		     "Linux journal (jdb2) layer error\n");
++		status = -EINVAL;
++		goto done;
++	}
++
++	*dirty = (le32_to_cpu(di->id1.journal1.ij_flags) &
++		  CMFS_JOURNAL_DIRTY_FL);
++
++	journal->j_journal = j_journal;
++	journal->j_inode = inode;
++	journal->j_bh = bh;
++
++	cmfs_set_journal_params(csb);
++	journal->j_state = CMFS_JOURNAL_LOADED;
++	status = 0;
++done:
++	if (status < 0) {
++		brelse(bh);
++		if (inode) {
++			CMFS_I(inode)->ip_open_count--;
++			iput(inode);
++		}
++	}
++	return status;
++}
++
++static void cmfs_bump_recovery_generation(struct cmfs_dinode *di)
++{
++	le32_add_cpu(&(di->id1.journal1.ij_recovery_generation), 1);
++}
++
++static int cmfs_journal_toggle_dirty(struct cmfs_super *csb,
++				     int dirty,
++				     int replayed)
++{
++	int status;
++	unsigned int flags;
++	struct cmfs_journal *journal = csb->journal;
++	struct buffer_head *bh = journal->j_bh;
++	struct cmfs_dinode *fe;
++
++	fe = (struct cmfs_dinode *)bh->b_data;
++
++	/*
++	 * The journal bh on the csb always comes from
++	 * cmfs_journal_init(). It's a code bug if we
++	 * mess it up.
++	 */
++	BUG_ON(!CMFS_IS_VALID_DINODE(fe));
++
++	flags = le32_to_cpu(fe->id1.journal1.ij_flags);
++	if (dirty)
++		flags |= CMFS_JOURNAL_DIRTY_FL;
++	else
++		flags &= ~CMFS_JOURNAL_DIRTY_FL;
++	fe->id1.journal1.ij_flags = cpu_to_le32(flags);
++
++	if (replayed)
++		cmfs_bump_recovery_generation(fe);
++
++	status = cmfs_write_block(csb, bh, INODE_CACHE(journal->j_inode));
++	if (status < 0)
++		mlog_errno(status);
++
++	return status;
++}
++
++static void cmfs_clear_journal_error(struct super_block *sb,
++				     journal_t *journal)
++{
++	int olderr;
++
++	olderr = jbd2_journal_errno(journal);
++	if (olderr) {
++		mlog(ML_ERROR,
++		     "File system error %d recorded in journal.\n",
++		     olderr);
++		mlog(ML_ERROR,
++		     "File system on device %s needs checking.\n",
++		     sb->s_id);
++
++		jbd2_journal_ack_err(journal);
++		jbd2_journal_clear_err(journal);
++	}
+ }
+ 
+ int cmfs_journal_wipe(struct cmfs_journal *journal, int full)
+ {
+-	return -1;
++	int status;
++
++	status = jbd2_journal_wipe(journal->j_journal, full);
++	if (status < 0) {
++		mlog_errno(status);
++		goto bail;
++	}
++
++	status = cmfs_journal_toggle_dirty(journal->j_csb, 0, 0);
++	if (status < 0)
++		mlog_errno(status);
++bail:
++	return status;
+ }
+ 
+ int cmfs_journal_load(struct cmfs_journal *journal, int replayed)
+ {
+-	return -1;
++	int status = 0;
++	struct cmfs_super *csb;
++
++	/* no journal */
++	if (!journal)
++		return 0;
++
++	csb = journal->j_csb;
++	status = jbd2_journal_load(journal->j_journal);
++	if (status < 0) {
++		mlog(ML_ERROR,
++		     "Failed to load journal!\n");
++		goto done;
++	}
++
++	cmfs_clear_journal_error(csb->sb, journal->j_journal);
++
++	status = cmfs_journal_toggle_dirty(csb, 1, replayed);
++	if (status < 0)
++		mlog_errno(status);
++
++done:
++	return status;
+ }
+ 
++/*
++ * If the journal has been kmalloc'd it needs to be freed after
++ * this call
++ */
+ void cmfs_journal_shutdown(struct cmfs_super *csb)
+ {
+-	return;
++	struct cmfs_journal *journal = NULL;
++	int status = 0;
++	struct inode *inode = NULL;
++	int num_running_trans = 0;
++
++	journal = csb->journal;
++
++	/* no journal */
++	if (!journal)
++		goto done;
++
++	inode = journal->j_inode;
++
++	if (journal->j_state != CMFS_JOURNAL_LOADED)
++		goto done;
++
++	/* need to inc inode use count - jbd2_journal_destroy will iput */
++	if (!igrab(inode))
++		BUG();
++
++	num_running_trans = atomic_read(&journal->j_num_trans);
++	journal->j_state = CMFS_JOURNAL_IN_SHUTDOWN;
++
++	BUG_ON(atomic_read(&(csb->journal->j_num_trans)) != 0);
++
++	jbd2_journal_lock_updates(journal->j_journal);
++	status = jbd2_journal_flush(journal->j_journal);
++	jbd2_journal_unlock_updates(journal->j_journal);
++	if (status < 0)
++		mlog_errno(status);
++
++	if (status == 0) {
++		status = cmfs_journal_toggle_dirty(csb, 0, 0);
++		if (status < 0)
++			mlog_errno(status);
++	}
++
++	/* shutdown kernel journal system */
++	jbd2_journal_destroy(journal->j_journal);
++	journal->j_journal = NULL;
++
++	CMFS_I(inode)->ip_open_count--;
++
++	brelse(journal->j_bh);
++	journal->j_bh = NULL;
++
++	journal->j_state = CMFS_JOURNAL_FREE;
++
++done:
++	if (inode)
++		iput(inode);
++}
++
++static void cmfs_queue_recovery_completion(struct cmfs_journal *journal,
++					   struct cmfs_dinode *la_dinode)
++{
++	struct cmfs_la_recovery_item *item;
++
++	item = kmalloc(sizeof(struct cmfs_la_recovery_item), GFP_NOFS);
++	if (!item) {
++		kfree(la_dinode);
++		mlog_errno(-ENOMEM);
++		return;
++	}
++
++	INIT_LIST_HEAD(&item->lri_list);
++	item->lri_la_dinode = la_dinode;
++
++	spin_lock(&journal->j_lock);
++	list_add_tail(&item->lri_list, &journal->j_la_cleanups);
++	queue_work(cmfs_wq, &journal->j_recovery_work);
++	spin_unlock(&journal->j_lock);
+ }
+ 
+ void cmfs_complete_mount_recovery(struct cmfs_super *csb)
+ {
+-	return;
++	struct cmfs_journal *journal = csb->journal;
++
++	if (!CMFS_HAS_COMPAT_FEATURE(csb->sb,
++				     CMFS_FEATURE_COMPAT_HAS_JOURNAL))
++		return;
++
++	cmfs_queue_recovery_completion(journal, csb->local_alloc_copy);
++	csb->local_alloc_copy = NULL;
++	csb->dirty = 0;
++}
++
++/*
++ * we can't grab the goofy sem lock from inside wait_event, so we use
++ * memory barriers to make sure that we will see the null task before
++ * being woken up
++ */
++static int cmfs_recovery_thread_running(struct cmfs_super *csb)
++{
++	mb();
++	return (csb->recovery_thread_task != NULL);
+ }
+ 
+ void cmfs_recovery_exit(struct cmfs_super *csb)
+ {
+-	return;
++	/*
++	 * disable any new recovery threads and wait for any currently
++	 * running ones to exit. Do this before setting the vol_state.
++	 */
++	mutex_lock(&csb->recovery_lock);
++	csb->disable_recovery = 1;
++	mutex_unlock(&csb->recovery_lock);
++	wait_event(csb->recovery_event, !cmfs_recovery_thread_running(csb));
++
++	/*
++	 * at this point, we know that no more recovery threads can be
++	 * launched, so wait for any recovery completion work to
++	 * complete
++	 */
++	flush_workqueue(cmfs_wq);
+ }
+ 
+Index: linux-cmfs/fs/cmfs/buffer_head_io.c
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/buffer_head_io.c
+@@ -0,0 +1,43 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * buffer_head_io.c
++ *
++ * Buffer cache handling
++ * (Copied and modified from fs/ocfs2/buffer_head_io.c)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#include <linux/fs.h>
++#include <linux/types.h>
++#include <linux/highmem.h>
++
++#include <cluster/masklog.h>
++
++#include "cmfs.h"
++
++
++int cmfs_write_block(struct cmfs_super *csb,
++		     struct buffer_head *bh,
++		     struct cmfs_caching_info *ci)
++{
++	return -1;
++}
++
+Index: linux-cmfs/fs/cmfs/buffer_head_io.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/buffer_head_io.h
+@@ -0,0 +1,41 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * buffer_head_io.h
++ *
++ * Buffer cache handling functions defined
++ * (Copied and modified from fs/ocfs2/buffer_head_io.h)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_BUFFER_HEAD_IO_H
++#define CMFS_BUFFER_HEAD_IO_H
++
++#include <linux/buffer_head.h>
++
++#define CMFS_BH_IGNORE_CACHE      1
++#define CMFS_BH_READAHEAD         8
++
++
++int cmfs_write_block(struct cmfs_super *csb,
++		     struct buffer_head *bh,
++		     struct cmfs_caching_info *ci);
++
++#endif /* CMFS_BUFFER_HEAD_IO_H */
+Index: linux-cmfs/fs/cmfs/cmfs.h
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/cmfs.h
++++ linux-cmfs/fs/cmfs/cmfs.h
+@@ -49,6 +49,20 @@
+ 
+ #define CMFS_DEFAULT_ATIME_QUANTUM	60
+ 
++
++enum cmfs_caching_info_flags {
++	/* indicates that the metadata cache is using the inline array */
++	CMFS_CACHE_FL_INLINE	= 1<<1,
++};
++
++struct cmfs_caching_operations;
++struct cmfs_caching_info {
++	unsigned int		ci_flags;
++	/* rest not implemented yet */
++};
++
++
++
+ enum cmfs_mount_options {
+ 	CMFS_MOUNT_BARRIER = 1 << 0,		/* Use block barriers */
+ 	CMFS_MOUNT_NOINTR = 1 << 1,		/* Don't cache signals */
+@@ -146,6 +160,12 @@ struct cmfs_super {
+ 	unsigned int local_alloc_bits;
+ 	unsigned int local_alloc_default_bits;
+ 
++	/*
++	 * clusters numbers at boot. It might be changed in runtime
++	 * (e.g. fs resize), do not trust it to be update to date
++	 */
++	unsigned int csb_clusters_at_boot;
++
+ 	/* protected by csb_lock */
+ 	enum cmfs_local_alloc_state local_alloc_state;
+ 
+@@ -178,6 +198,13 @@ struct cmfs_super {
+ 
+ #define CMFS_SB(sb)	((struct cmfs_super *)(sb)->s_fs_info)
+ 
++#define CMFS_IS_VALID_DINODE(ptr)				\
++	(!strcmp((ptr)->i_signature, CMFS_INODE_SIGNATURE))
++#define CMFS_IS_VALID_EXTENT_BLOCK(ptr)				\
++	(!strcmp((ptr)->s_signature, CMFS_EXTENT_BLOCK_SIGNATURE))
++#define CMFS_IS_VALID_GROUP_DESC(ptr)				\
++	(!strcmp((ptr)->s_signature, CMFS_GROUP_DESC_SIGNATURE))
++
+ static inline void cmfs_set_ro_flag(struct cmfs_super *csb,
+ 				    int flag)
+ {
+Index: linux-cmfs/fs/cmfs/cmfs.mod.c
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/cmfs.mod.c
++++ linux-cmfs/fs/cmfs/cmfs.mod.c
+@@ -21,4 +21,4 @@ __attribute__((section(".modinfo"))) =
+ "depends=";
+ 
+ 
+-MODULE_INFO(srcversion, "D0358BC1672329AC1CCD132");
++MODULE_INFO(srcversion, "0F605C595470376B916F6FC");
+Index: linux-cmfs/fs/cmfs/cmfs_fs.h
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/cmfs_fs.h
++++ linux-cmfs/fs/cmfs/cmfs_fs.h
+@@ -52,6 +52,8 @@
+ #define CMFS_MAX_VOL_ID_LENGTH		 16
+ #define CMFS_VOL_UUID_LEN		 16
+ #define CMFS_MAX_FILENAME_LEN		255
++/* Journal limits (in bytes) */
++#define CMFS_MIN_JOURNAL_SIZE		(4*1024*1024)
+ 
+ /* Slot map indicator for an empty slot */
+ #define CMFS_INVALID_SLOT		-1
+@@ -59,6 +61,9 @@
+ 
+ /* Journal flags (cmfs_dinode.id1.journal1.i_flags) */
+ #define CMFS_JOURNAL_DIRTY_FL	(0x00000001)	/* Journal needs recovery */
++/* superblock s_state flags */
++#define CMFS_ERROR_FS		(0x00000001)	/* FS saw errors */
++
+ 
+ /*
+  * Min block size = Max block size = 4KB
+@@ -173,7 +178,7 @@
+ 
+ /* Compatibility flags */
+ #define CMFS_FEATURE_COMPAT_BACKUP_SB		0x0001
+-#define CMFS_FEATURE_COMPAT_JBD2_SB		0x0002
++#define CMFS_FEATURE_COMPAT_HAS_JOURNAL		0x0002
+ #define CMFS_FEATURE_COMPAT_INLINE_DATA		0x0004
+ #define CMFS_FEATURE_COMPAT_META_ECC		0x0008
+ #define CMFS_FEATURE_COMPAT_INDEXED_DIRS	0x0010
+@@ -184,7 +189,7 @@
+ 
+ 
+ #define CMFS_FEATURE_COMPAT_SUPP	(CMFS_FEATURE_COMPAT_BACKUP_SB \
+-					 | CMFS_FEATURE_COMPAT_JBD2_SB \
++					 | CMFS_FEATURE_COMPAT_HAS_JOURNAL \
+ 					 | CMFS_FEATURE_COMPAT_INLINE_DATA \
+ 					 | CMFS_FEATURE_COMPAT_META_ECC \
+ 					 | CMFS_FEATURE_COMPAT_INDEXED_DIRS \
+@@ -193,6 +198,10 @@
+ #define CMFS_FEATURE_INCOMPAT_SUPP	0x0
+ #define CMFS_FEATURE_RO_COMPAT_SUPP	0x0
+ 
++
++
++
++
+ /* System file index */
+ enum {
+ 	BAD_BLOCK_SYSTEM_INODE = 0,
+@@ -256,7 +265,7 @@ struct cmfs_extent_rec {
+ /*08*/	__le64 e_blkno;		/* Physical disk offset, in blocks */
+ /*10*/	union {
+ 		__le64 e_int_clusters;	/* Clusters covered by all children */
+-/*		__le64 e_int_blocks;	/* blocks covered by all children */
++/*		__le64 e_int_blocks;	 blocks covered by all children */
+ 		struct {
+ 			__le32 e_leaf_blocks;	/* blocks covered by this extent
+ 						   for 4KB block, the max length
+Index: linux-cmfs/fs/cmfs/extent_map.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/extent_map.h
+@@ -0,0 +1,47 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * extent_map.h
++ *
++ * In-memory file extent mappings for CMFS.
++ * (Copied and modified from fs/ocfs2/extent_map.h)
++ *
++ * Copyright (C) 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License, version 2,  as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef _EXTENT_MAP_H
++#define _EXTENT_MAP_H
++
++struct cmfs_extent_map_item {
++	unsigned int			ei_cpos;
++	unsigned int			ei_phys;
++	unsigned int			ei_clusters;
++	unsigned int			ei_flags;
++
++	struct list_head		ei_list;
++};
++
++#define CMFS_MAX_EXTENT_MAP_ITEMS	3
++struct cmfs_extent_map {
++	unsigned int			em_num_items;
++	struct list_head		em_list;
++};
++
++
++
++#endif  /* _EXTENT_MAP_H */
+Index: linux-cmfs/fs/cmfs/inode.h
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/inode.h
++++ linux-cmfs/fs/cmfs/inode.h
+@@ -28,10 +28,28 @@
+ #ifndef CMFS_INODE_H
+ #define CMFS_INODE_H
+ 
++#include "extent_map.h"
++#include "cmfs.h"
++
+ /* CMFS Inode Private Data */
+ struct cmfs_inode_info {
+-	u64		ip_blkno;
+-	struct inode	vfs_inode;
++	u64				ip_blkno;
++
++	/* These fields are protected by ip_lock */
++	spinlock_t			ip_lock;
++	u32				ip_open_count;
++	struct list_head		ip_io_markers;
++	u32				ip_clusters;
++
++	u16				ip_dyn_features;
++	struct mutex			ip_io_mutex;
++	u32				ip_flags;
++	u32				ip_attr;
++
++	struct cmfs_caching_info	ip_metadata_cache;
++	struct cmfs_extent_map		ip_extent_map;
++	struct inode			vfs_inode;
++	struct jbd2_inode		ip_jinode;
+ };
+ 
+ 
+@@ -39,17 +57,45 @@ struct cmfs_inode_info {
+ #define CMFS_FI_FLAG_SYSFILE		0x1
+ #define CMFS_FI_FLAG_ORPHAN_RECOVERY	0x2
+ 
++/*
++ * Flags for the ip_flags field
++ */
++/* System file inodes */
++#define CMFS_INODE_SYSTEM_FILE		0x00000001
++#define CMFS_INODE_JOURNAL		0x00000002
++#define CMFS_INODE_BITMAP		0x00000004
++/* This inode has been wiped from disk */
++#define CMFS_INODE_DELTED		0x00000008
++/* does someone have the file open O_DIRECT */
++#define CMFS_INODE_OPEN_DIRECT		0x00000010
++
++
++
+ struct inode *cmfs_iget(struct cmfs_super *csb,
+ 			u64 blkno,
+ 			unsigned flags,
+ 			int sysfile_type);
+ void cmfs_sync_blockdev(struct super_block *sb);
+-
+-
++int cmfs_read_inode_block_full(struct inode *inode,
++			       struct buffer_head **bh,
++			       int flags);
++int cmfs_read_inode_block(struct inode *inode, struct buffer_head **bh);
+ 
+ static inline struct cmfs_inode_info *CMFS_I(struct inode *inode)
+ {
+ 	return container_of(inode, struct cmfs_inode_info, vfs_inode);
+ }
+ 
++static inline struct cmfs_caching_info *INODE_CACHE(struct inode *inode)
++{
++	return &CMFS_I(inode)->ip_metadata_cache;
++}
++
++
++#define INODE_JOURNAL(i) (CMFS_I(i)->ip_flags & CMFS_INODE_JOURNAL)
++#define SET_INODE_JOURNAL(i) (CMFS_I(i)->ip_flags |= CMFS_INODE_JOURNAL)
++
++
++
++
+ #endif /* CMFS_INODE_H */
+Index: linux-cmfs/fs/cmfs/journal.h
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/journal.h
++++ linux-cmfs/fs/cmfs/journal.h
+@@ -37,9 +37,16 @@ enum cmfs_journal_state {
+ 	CMFS_JOURNAL_IN_SHUTDOWN,
+ };
+ 
++#define CMFS_DEFAULT_COMMIT_INTERVAL	(HZ * JBD2_DEFAULT_MAX_COMMIT_AGE)
++
+ struct cmfs_super;
+ struct cmfs_dinode;
+ 
++struct cmfs_la_recovery_item {
++	struct list_head	lri_list;
++	struct cmfs_dinode	*lri_la_dinode;
++};
++
+ struct cmfs_journal {
+ 	enum cmfs_journal_state	j_state;
+ 	journal_t                 *j_journal; /* The kernels journal type */
+@@ -76,6 +83,7 @@ int cmfs_journal_load(struct cmfs_journa
+ void cmfs_journal_shutdown(struct cmfs_super *csb);
+ void cmfs_complete_mount_recovery(struct cmfs_super *csb);
+ void cmfs_recovery_exit(struct cmfs_super *csb);
++void cmfs_set_journal_params(struct cmfs_super *csb);
+ 
+ 
+ 
+Index: linux-cmfs/fs/cmfs/super.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/super.h
+@@ -0,0 +1,33 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * super.h
++ *
++ * Function prototypes
++ * (Copied and modified from fs/ocfs2/super.h)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, Copyright (C) 2013, Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_SUPER_H
++#define CMFS_SUPER_H
++
++extern struct workqueue_struct *cmfs_wq;
++
++#endif /* CMFS_SUPER_H */
+Index: linux-cmfs/fs/cmfs/cmfs.ko
+===================================================================
+Binary files linux-cmfs.orig/fs/cmfs/cmfs.ko and linux-cmfs/fs/cmfs/cmfs.ko differ
+Index: linux-cmfs/fs/cmfs/cmfs.mod.o
+===================================================================
+Binary files linux-cmfs.orig/fs/cmfs/cmfs.mod.o and linux-cmfs/fs/cmfs/cmfs.mod.o differ
+Index: linux-cmfs/fs/cmfs/cmfs.o
+===================================================================
+Binary files linux-cmfs.orig/fs/cmfs/cmfs.o and linux-cmfs/fs/cmfs/cmfs.o differ
+Index: linux-cmfs/fs/cmfs/dcache.o
+===================================================================
+Binary files linux-cmfs.orig/fs/cmfs/dcache.o and linux-cmfs/fs/cmfs/dcache.o differ
+Index: linux-cmfs/fs/cmfs/inode.o
+===================================================================
+Binary files linux-cmfs.orig/fs/cmfs/inode.o and linux-cmfs/fs/cmfs/inode.o differ
+Index: linux-cmfs/fs/cmfs/journal.o
+===================================================================
+Binary files linux-cmfs.orig/fs/cmfs/journal.o and linux-cmfs/fs/cmfs/journal.o differ
+Index: linux-cmfs/fs/cmfs/localalloc.o
+===================================================================
+Binary files linux-cmfs.orig/fs/cmfs/localalloc.o and linux-cmfs/fs/cmfs/localalloc.o differ
+Index: linux-cmfs/fs/cmfs/super.o
+===================================================================
+Binary files linux-cmfs.orig/fs/cmfs/super.o and linux-cmfs/fs/cmfs/super.o differ
+Index: linux-cmfs/fs/cmfs/sysfile.o
+===================================================================
+Binary files linux-cmfs.orig/fs/cmfs/sysfile.o and linux-cmfs/fs/cmfs/sysfile.o differ
