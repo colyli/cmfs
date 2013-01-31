@@ -29,13 +29,12 @@ Index: linux-cmfs/fs/cmfs/Makefile
 ===================================================================
 --- linux-cmfs.orig/fs/cmfs/Makefile
 +++ linux-cmfs/fs/cmfs/Makefile
-@@ -5,4 +5,11 @@ ccflags-y += -DCATCH_BH_JBD_RACES
- obj-$(CONFIG_CMFS_FS) +=	cmfs.o
+@@ -6,4 +6,10 @@ obj-$(CONFIG_CMFS_FS) +=	cmfs.o
  
  cmfs-objs := \
--	super.o
-+	super.o			\
-+	journal.o		\
+ 	super.o			\
+-	masklog.o
++	masklog.o		\
 +	ver.o			\
 +	dcache.o		\
 +	localalloc.o		\
