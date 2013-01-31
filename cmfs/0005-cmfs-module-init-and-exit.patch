@@ -1,0 +1,361 @@
+From: Coly Li <i@coly.li>
+Subject: cmfs: add module_init(), module_exit() and other depended routines
+
+This patch adds module_init() and module_exit() to cmfs code. Now cmfs.ko is able to be executed in mount.
+
+module_init()/exit() reference cmfs_init()/exit(), this patch also adds other routines which are necessary by cmfs_init() and cmfs_exit().
+
+Currently the code just passes gcc compiling, there are several stub routines needs to be implemented.
+
+Signed-off-by: Coly Li <i@coly.li>
+---
+Index: linux-cmfs/fs/cmfs/super.c
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/super.c
++++ linux-cmfs/fs/cmfs/super.c
+@@ -45,10 +45,13 @@
+ #include "dcache.h"
+ #include "localalloc.h"
+ #include "journal.h"
++#include "ver.h"
++#include "aops.h"
+ 
+ MODULE_AUTHOR("Coly Li <i@coly.li>");
+ MODULE_LICENSE("GPL");
+ 
++static struct kmem_cache *cmfs_inode_cachep;
+ /*
+  * CMFS needs to schedule several different types of work which
+  * require disk I/O, recovery wait, etc. Since these types of
+@@ -56,7 +59,8 @@ MODULE_LICENSE("GPL");
+  * workqueue and schedule on our own
+  */
+ struct workqueue_struct *cmfs_wq;
+-
++/* ioend work queues */
++wait_queue_head_t cmfs__ioend_wq[CMFS_IOEND_WQ_HASH_SZ];
+ 
+ struct mount_options {
+ 	unsigned long commit_interval;
+@@ -914,6 +918,7 @@ static int cmfs_fill_super(struct super_
+ 	struct cmfs_super *csb = NULL;
+ 	struct buffer_head *bh = NULL;
+ 
++	memset(&parsed_options, 0, sizeof(struct mount_options));
+ 	if (!cmfs_parse_options(sb, data, &parsed_options, 0)) {
+ 		status = -EINVAL;
+ 		goto read_super_error;
+@@ -1024,3 +1029,119 @@ read_super_error:
+ 
+ 	return status;
+ }
++
++static void cmfs_inode_init_once(void *data)
++{
++	struct cmfs_inode_info *ci = data;
++
++	ci->ip_flags = 0;
++	ci->ip_open_count = 0;
++	spin_lock_init(&ci->ip_lock);
++	cmfs_extent_map_init(&ci->vfs_inode);
++	INIT_LIST_HEAD(&ci->ip_io_markers);
++	ci->ip_dir_start_lookup = 0;
++	atomic_set(&ci->ip_unaligned_aio, 0);
++	init_rwsem(&ci->ip_alloc_sem);
++	mutex_init(&ci->ip_io_mutex);
++
++	ci->ip_blkno = 0;
++	ci->ip_clusters = 0;
++
++	inode_init_once(&ci->vfs_inode);
++}
++
++static int cmfs_initialize_mem_caches(void)
++{
++	cmfs_inode_cachep = kmem_cache_create("cmfs_inode_cache",
++					      sizeof(struct cmfs_inode_info),
++					      0,
++					      (SLAB_HWCACHE_ALIGN|
++					       SLAB_RECLAIM_ACCOUNT|
++					       SLAB_MEM_SPREAD),
++					      cmfs_inode_init_once);
++	if (!cmfs_inode_cachep)
++		return -ENOMEM;
++
++	return 0;
++}
++
++static struct dentry *cmfs_mount(struct file_system_type *fs_type,
++				 int flags,
++				 const char *dev_name,
++				 void *data)
++{
++	return mount_bdev(fs_type, flags, dev_name, data, cmfs_fill_super);
++}
++
++static void cmfs_kill_sb(struct super_block *sb)
++{
++	kill_block_super(sb);
++}
++
++static struct file_system_type cmfs_fs_type = {
++	.owner		= THIS_MODULE,
++	.name		= "cmfs",
++	.mount		= cmfs_mount,
++	.kill_sb	= cmfs_kill_sb,
++
++	.fs_flags	= FS_REQUIRES_DEV|FS_RENAME_DOES_D_MOVE,
++	.next		= NULL
++};
++
++static void cmfs_free_mem_caches(void)
++{
++	/*
++	 * Make sure all delayed rcu free indoes are flushed
++	 * before we destroy cache
++	 */
++	rcu_barrier();
++	if (cmfs_inode_cachep)
++		kmem_cache_destroy(cmfs_inode_cachep);
++	cmfs_inode_cachep = NULL;
++}
++
++static int __init cmfs_init(void)
++{
++	int status, i;
++
++	cmfs_print_version();
++
++	for (i = 0; i < CMFS_IOEND_WQ_HASH_SZ; i++)
++		init_waitqueue_head(&cmfs__ioend_wq[i]);
++
++	status = cmfs_initialize_mem_caches();
++	if (status < 0)
++		goto out1;
++
++	cmfs_wq = NULL;
++	cmfs_wq = create_singlethread_workqueue("cmfs_wq");
++	if (!cmfs_wq) {
++		status = -ENOMEM;
++		goto out2;
++	}
++
++	status = register_filesystem(&cmfs_fs_type);
++	if (!status)
++		return 0;
++
++	destroy_workqueue(cmfs_wq);
++out2:
++	cmfs_free_mem_caches();
++out1:
++	mlog_errno(status);
++	return status;
++}
++
++static void __exit cmfs_exit(void)
++{
++	if (cmfs_wq) {
++		flush_workqueue(cmfs_wq);
++		destroy_workqueue(cmfs_wq);
++	}
++
++	unregister_filesystem(&cmfs_fs_type);
++	cmfs_free_mem_caches();
++}
++
++module_init(cmfs_init);
++module_exit(cmfs_exit);
+Index: linux-cmfs/fs/cmfs/aops.c
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/aops.c
+@@ -0,0 +1,29 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ * aops.c
++ *
++ * Address spaces operation routines
++ * (Copied and modified from fs/ocfs2/aops.c)
++ *
++ * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
++ * CMFS modification, by Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#include "cmfs.h"
++#include "aops.h"
++
+Index: linux-cmfs/fs/cmfs/aops.h
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/aops.h
+@@ -0,0 +1,37 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * aops.h
++ *
++ * Function prototypes
++ * (Copied and modified from fs/ocfs2/aops.h)
++ *
++ * Copyright (C) 2002, 2004, 2005 Oracle.  All rights reserved.
++ * CMFS modification, by Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#ifndef CMFS_AOPS_H
++#define CMFS_AOPS_H
++
++/* XXX: why it's 37 ? */
++#define CMFS_IOEND_WQ_HASH_SZ	37
++#define cmfs_ioend_wq(v)   (&cmfs__ioend_wq[((unsigned long)(v)) %\
++					    CMFS_IOEND_WQ_HASH_SZ])
++extern wait_queue_head_t cmfs__ioend_wq[CMFS_IOEND_WQ_HASH_SZ];
++
++#endif /* CMFS_FILE_H */
+Index: linux-cmfs/fs/cmfs/extent_map.c
+===================================================================
+--- /dev/null
++++ linux-cmfs/fs/cmfs/extent_map.c
+@@ -0,0 +1,37 @@
++/* -*- mode: c; c-basic-offset: 8; -*-
++ * vim: noexpandtab sw=8 ts=8 sts=0:
++ *
++ * extent_map.c
++ *
++ * Block/Cluster mapping functions
++ * (Copied and modified from fs/ocfs2/extent_map.c)
++ *
++ * Copyright (C) 2004 Oracle.  All rights reserved.
++ * CMFS modification, by Coly Li <i@coly.li>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License, version 2,  as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program; if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 021110-1307, USA.
++ */
++
++#include <linux/fs.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/types.h>
++#include <linux/fiemap.h>
++
++void cmfs_extent_map_init(struct inode *inode)
++{
++	return;
++}
++
+Index: linux-cmfs/fs/cmfs/Makefile
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/Makefile
++++ linux-cmfs/fs/cmfs/Makefile
+@@ -12,4 +12,7 @@ cmfs-objs := \
+ 	localalloc.o		\
+ 	sysfile.o		\
+ 	inode.o			\
+-	journal.o
++	journal.o		\
++	buffer_head_io.o	\
++	aops.o			\
++	extent_map.o
+Index: linux-cmfs/fs/cmfs/buffer_head_io.c
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/buffer_head_io.c
++++ linux-cmfs/fs/cmfs/buffer_head_io.c
+@@ -29,7 +29,7 @@
+ #include <linux/types.h>
+ #include <linux/highmem.h>
+ 
+-#include <cluster/masklog.h>
++#include "masklog.h"
+ 
+ #include "cmfs.h"
+ 
+Index: linux-cmfs/fs/cmfs/extent_map.h
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/extent_map.h
++++ linux-cmfs/fs/cmfs/extent_map.h
+@@ -42,6 +42,6 @@ struct cmfs_extent_map {
+ 	struct list_head		em_list;
+ };
+ 
+-
++void cmfs_extent_map_init(struct inode *inode);
+ 
+ #endif  /* _EXTENT_MAP_H */
+Index: linux-cmfs/fs/cmfs/inode.h
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/inode.h
++++ linux-cmfs/fs/cmfs/inode.h
+@@ -34,7 +34,10 @@
+ /* CMFS Inode Private Data */
+ struct cmfs_inode_info {
+ 	u64				ip_blkno;
+-
++	/* protects allocation changes on this inode */
++	struct rw_semaphore		ip_alloc_sem;
++	/* Number of outstanding AIO's which are not page aligned */
++	atomic_t			ip_unaligned_aio;
+ 	/* These fields are protected by ip_lock */
+ 	spinlock_t			ip_lock;
+ 	u32				ip_open_count;
+@@ -50,6 +53,8 @@ struct cmfs_inode_info {
+ 	struct cmfs_extent_map		ip_extent_map;
+ 	struct inode			vfs_inode;
+ 	struct jbd2_inode		ip_jinode;
++
++	u32				ip_dir_start_lookup;
+ };
+ 
+ 
+Index: linux-cmfs/fs/cmfs/localalloc.c
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/localalloc.c
++++ linux-cmfs/fs/cmfs/localalloc.c
+@@ -87,7 +87,7 @@ int cmfs_begin_local_alloc_recovery(stru
+ 	return -1;
+ }
+ 
+-int cmfs_local_local_alloc(struct cmfs_super *csb)
++int cmfs_load_local_alloc(struct cmfs_super *csb)
+ {
+ 	return -1;
+ }

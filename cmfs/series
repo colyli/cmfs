@@ -2,3 +2,4 @@
 0002-cmfs-mask-log.patch
 0003-cmfs-basic-mount-implementation.patch
 0004-cmfs-basic-jbd2-journal-support.patch
+0005-cmfs-module-init-and-exit.patch
