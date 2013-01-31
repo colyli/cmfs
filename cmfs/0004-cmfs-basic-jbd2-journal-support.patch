@@ -21,7 +21,7 @@ Index: linux-cmfs/fs/cmfs/super.c
 + * work tend to be heavy we avoid using the kernel events
 + * workqueue and schedule on our own
 + */
-+struct workqueue_struct *cmfs_wq = NULL;
++struct workqueue_struct *cmfs_wq;
 +
 +
  struct mount_options {
@@ -769,16 +769,6 @@ Index: linux-cmfs/fs/cmfs/cmfs.h
  static inline void cmfs_set_ro_flag(struct cmfs_super *csb,
  				    int flag)
  {
-Index: linux-cmfs/fs/cmfs/cmfs.mod.c
-===================================================================
---- linux-cmfs.orig/fs/cmfs/cmfs.mod.c
-+++ linux-cmfs/fs/cmfs/cmfs.mod.c
-@@ -21,4 +21,4 @@ __attribute__((section(".modinfo"))) =
- "depends=";
- 
- 
--MODULE_INFO(srcversion, "D0358BC1672329AC1CCD132");
-+MODULE_INFO(srcversion, "0F605C595470376B916F6FC");
 Index: linux-cmfs/fs/cmfs/cmfs_fs.h
 ===================================================================
 --- linux-cmfs.orig/fs/cmfs/cmfs_fs.h
@@ -1042,30 +1032,3 @@ Index: linux-cmfs/fs/cmfs/super.h
 +extern struct workqueue_struct *cmfs_wq;
 +
 +#endif /* CMFS_SUPER_H */
-Index: linux-cmfs/fs/cmfs/cmfs.ko
-===================================================================
-Binary files linux-cmfs.orig/fs/cmfs/cmfs.ko and linux-cmfs/fs/cmfs/cmfs.ko differ
-Index: linux-cmfs/fs/cmfs/cmfs.mod.o
-===================================================================
-Binary files linux-cmfs.orig/fs/cmfs/cmfs.mod.o and linux-cmfs/fs/cmfs/cmfs.mod.o differ
-Index: linux-cmfs/fs/cmfs/cmfs.o
-===================================================================
-Binary files linux-cmfs.orig/fs/cmfs/cmfs.o and linux-cmfs/fs/cmfs/cmfs.o differ
-Index: linux-cmfs/fs/cmfs/dcache.o
-===================================================================
-Binary files linux-cmfs.orig/fs/cmfs/dcache.o and linux-cmfs/fs/cmfs/dcache.o differ
-Index: linux-cmfs/fs/cmfs/inode.o
-===================================================================
-Binary files linux-cmfs.orig/fs/cmfs/inode.o and linux-cmfs/fs/cmfs/inode.o differ
-Index: linux-cmfs/fs/cmfs/journal.o
-===================================================================
-Binary files linux-cmfs.orig/fs/cmfs/journal.o and linux-cmfs/fs/cmfs/journal.o differ
-Index: linux-cmfs/fs/cmfs/localalloc.o
-===================================================================
-Binary files linux-cmfs.orig/fs/cmfs/localalloc.o and linux-cmfs/fs/cmfs/localalloc.o differ
-Index: linux-cmfs/fs/cmfs/super.o
-===================================================================
-Binary files linux-cmfs.orig/fs/cmfs/super.o and linux-cmfs/fs/cmfs/super.o differ
-Index: linux-cmfs/fs/cmfs/sysfile.o
-===================================================================
-Binary files linux-cmfs.orig/fs/cmfs/sysfile.o and linux-cmfs/fs/cmfs/sysfile.o differ
