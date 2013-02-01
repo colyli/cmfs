@@ -66,7 +66,6 @@ typedef struct _cmfs_dinode cmfs_dinode;
 typedef struct _cmfs_bitmap cmfs_bitmap;
 typedef struct _cmfs_fs_options cmfs_fs_options;
 
-
 struct _cmfs_filesys {
 	char *fs_devname;
 	uint32_t fs_flags;
@@ -112,6 +111,7 @@ struct cmfs_cluster_group_sizes {
 	uint16_t cgs_tail_group_bits;
 	uint32_t cgs_cluster_groups;
 };
+
 
 static inline void cmfs_calc_cluster_groups(
 					uint64_t clusters,
@@ -204,8 +204,12 @@ void cmfs_swap_group_desc_from_cpu(cmfs_filesys *fs,
 				   struct cmfs_group_desc *gd);
 void cmfs_swap_group_desc_to_cpu(cmfs_filesys *fs,
 				   struct cmfs_group_desc *gd);
-
-
+errcode_t cmfs_parse_feature(const char *opts,
+			     cmfs_fs_options *feature_flags,
+			     cmfs_fs_options *reverse_flags);
+errcode_t cmfs_merge_feature_with_default_flags(cmfs_fs_options *dest,
+						cmfs_fs_options *feature_set,
+						cmfs_fs_options *reverse_set);
 
 
 static inline uint64_t cmfs_clusters_to_blocks(cmfs_filesys *fs,

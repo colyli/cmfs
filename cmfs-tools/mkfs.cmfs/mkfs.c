@@ -386,69 +386,49 @@ static int get_number(char *arg, uint64_t *res)
 	return 0;
 }
 
+/* only "size=" option, no-journal handled in cmfs_parse_feature() */
 static void
 parse_journal_opts(char *progname, const char *opts,
 		   uint64_t *journal_size_in_bytes)
 {
-	char *options, *token, *next, *p, *arg;
-	int ret, journal_usage = 0;
+	char *token, *arg;
+	int ret, journal_usage = 1;
 	uint64_t val;
-	int invert;
-	
-	options = strdup(opts);
 
-	for (token = options; token && *token; token = next) {
-		p = strchr(token,',');
-		next = NULL;
-		invert = 0;
-
-		if (p) {
-			*p = '\0';
-			next = p + 1;
-		}
-
-		arg = strstr(token, "no");
-		if (arg == token) {
-			invert = 1;
-			token += strlen("no");
-		}
-
-		arg = strchr(token, '=');
-		if (arg) {
-			*arg = '\0';
-			arg++;
-		}
-
-		if (strcmp(token, "size") == 0) {
-			if (!arg || invert) {
-				journal_usage ++;
-				continue;
-			}
-
-			ret = get_number(arg, &val);
-			if (ret ||
-			    val < CMFS_MIN_JOURNAL_SIZE) {
-				com_err(progname, 0,
-					"Invalid journal size: %s\n"
-					"Size must be greater than %d bytes",
-					arg, CMFS_MIN_JOURNAL_SIZE);
-				exit(1);
-			}
-			*journal_size_in_bytes = val;
-		} else {
-			journal_usage ++;	
-		}
+	token = strdup(opts);
+	arg = strchr(token, '=');
+	if (arg) {
+		*arg = '\0';
+		arg++;
 	}
 
+	if ((!arg) || ((*arg) == '\0'))
+		goto out;
+
+	if (strcmp(token, "size") == 0) {
+		ret = get_number(arg, &val);
+		if (ret ||
+		    val < CMFS_MIN_JOURNAL_SIZE) {
+			com_err(progname, 0,
+				"Invalid journal size: %s\n"
+				"Size must be greater than %d bytes",
+				arg, CMFS_MIN_JOURNAL_SIZE);
+			exit(1);
+		}
+		*journal_size_in_bytes = val;
+		journal_usage = 0;
+	}
+
+out:
 	if (journal_usage) {
 		com_err(progname, 0,
 			"Bad journal options specified. Valid journal "
-			"options ar:\n"
+			"options is:\n"
 			"\t size=<journal size>\n");
 		exit(1);
 	}
 
-	free(options);
+	free(token);
 }
 
 /*
@@ -498,8 +478,8 @@ get_state(int argc, char **argv)
 	uint64_t journal_size_in_bytes = 0;
 //	int mount = -1;
 //	int no_backup_super = -1;
-//	cmfs_fs_options feature_flags = {0, 0, 0};
-//	cmfs_fs_options reverse_flags = {0, 0, 0};
+	cmfs_fs_options feature_flags = {0, 0, 0};
+	cmfs_fs_options reverse_flags = {0, 0, 0};
 
 	static struct option long_options[] = {
 		{"cluster-size",	1, 0, 'C'},
@@ -579,6 +559,16 @@ get_state(int argc, char **argv)
 		case 'n':
 			dry_run = 1;
 			break;
+		case FEATURES_OPTION:
+			ret = cmfs_parse_feature(optarg,
+						 &feature_flags,
+						 &reverse_flags);
+			if (ret) {
+				com_err(progname, ret,
+					"when parsing fs-features string");
+				exit(1);
+			}
+			break;
 		default:
 			usage(progname);		
 			break;
@@ -631,7 +621,20 @@ get_state(int argc, char **argv)
 	s->device_name		= strdup(device_name);
 	s->fd			= -1;
 	s->format_time		= time(NULL);
-	s->journal_size_in_bytes= journal_size_in_bytes;
+
+	ret = cmfs_merge_feature_with_default_flags(&s->feature_flags,
+						    &feature_flags,
+						    &reverse_flags);
+	if (ret) {
+		com_err(s->progname, ret,
+			"while reconciling specified features");
+		exit(1);
+	}
+	if (s->feature_flags.opt_compat & CMFS_FEATURE_COMPAT_HAS_JOURNAL)
+		s->journal_size_in_bytes= journal_size_in_bytes;
+	else
+		s->journal_size_in_bytes = 0;
+
 	/* XXX: intial_slots may be assigned to number of CPUs
 	 * in future. */
 	s->initial_slots	= 1;
@@ -1152,7 +1155,11 @@ static void print_state(State *s)
 		s->global_cpg);
 	printf("Extent allocator size: %"PRIu64" (%u groups)\n",
 		extsize, numgrps);
-	printf("Journal size: %"PRIu64"\n", s->journal_size_in_bytes);
+	printf("Journal size: ");
+	if (s->journal_size_in_bytes > 0)
+		printf("%"PRIu64"\n", s->journal_size_in_bytes);
+	else
+		printf("no-journal\n");
 	printf("Allocator slots: %u\n", s->initial_slots);
 }
 

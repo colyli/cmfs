@@ -57,6 +57,12 @@ ec	CMFS_ET_DIR_CORRUPTED,
 ec	CMFS_ET_CORRUPT_SUPERBLOCK,
 	"The CMFS superblock is corrupt"
 
+ec	CMFS_ET_UNSUPP_FEATURE,
+	"Unsupported read-only feature(s) found"
+
+ec	CMFS_ET_CONFLICTING_FEATURES,
+	"Conflicting features specified"
+
 ec	CMFS_ET_BAD_MAGIC,
 	"Bad magic number in superblock"
 

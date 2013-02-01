@@ -121,6 +121,7 @@ struct _State {
 
 	uint64_t reserved_tail_size;
 
+	/* 0 means no-journal */
 	uint64_t journal_size_in_bytes;
 
 	uint32_t extent_alloc_size_in_clusters;
