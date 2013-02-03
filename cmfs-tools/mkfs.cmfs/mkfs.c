@@ -386,9 +386,12 @@ static int get_number(char *arg, uint64_t *res)
 	return 0;
 }
 
-/* only "size=" option, no-journal handled in cmfs_parse_feature() */
-static void
-parse_journal_opts(char *progname, const char *opts,
+/*
+ * CMFS uses 64bit journal size and jbd2 as default, therefore only "size="
+ * option is parsed here. For "nojournal" feature, is handled with other
+ * "--fs-features" in cmfs_parse_feature().
+ */
+static void parse_journal_opts(char *progname, const char *opts,
 		   uint64_t *journal_size_in_bytes)
 {
 	char *token, *arg;
@@ -687,9 +690,17 @@ static uint64_t align_bytes_to_clusters_ceil(State *s,
 
 static uint64_t figure_journal_size(uint64_t size, State *s)
 {
-	unsigned int j_blocks;
-	/* XXX: set journal size to 128M, it much enough for big files */
-	j_blocks = 32768;
+	/*
+	 * XXX: set default journal size to 128M,
+	 * it much enough for big files
+	 */
+	unsigned int j_blocks = 32768;
+
+	/* for nojournal, return journal size as 0 */
+	if (!(s->feature_flags.opt_compat &
+	      CMFS_FEATURE_COMPAT_HAS_JOURNAL))
+		return 0;
+
 	if (size > 0) {
 		j_blocks = size >> s->blocksize_bits;
 		if (j_blocks >= s->volume_size_in_blocks) {
