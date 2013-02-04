@@ -52,7 +52,7 @@ static SystemFileInfo system_files[] = {
 	{"bad_blocks", SFI_OTHER, 1, S_IFREG | 0644},
 	{"global_inode_alloc", SFI_CHAIN, 1, S_IFREG | 0644},
 	{"global_bitmap", SFI_CLUSTER, 1, S_IFREG | 0644},
-	{"orphan_dir", SFI_OTHER, 1, S_IFDIR | 0755},
+//	{"orphan_dir", SFI_OTHER, 1, S_IFDIR | 0755},
 	{"extent_alloc", SFI_CHAIN, 1, S_IFREG | 0644},
 	{"inode_alloc", SFI_CHAIN, 1, S_IFREG | 0644},
 	{"journal", SFI_JOURNAL, 1, S_IFREG | 0644},
@@ -67,7 +67,10 @@ static void version(const char *progname)
 
 static void usage(const char *progname)
 {
-	fprintf(stderr, "usage: %s not finished yet.\n",
+	fprintf(stderr,
+		"usage: %s [-C cluster-size] [-J journal-options] [-L volume-label]\n"
+		"\t\t[-FnqvV] [--dry-run] [--fs-features=[[no]journal,...]]\n"
+		"\t\tdevice [blocks-count]\n",
 		progname);
 	exit(1);
 }
@@ -509,7 +512,7 @@ get_state(int argc, char **argv)
 	}
 
 	while(1) {
-		c = getopt_long(argc, argv, "C:L:vqVJFnM:",
+		c = getopt_long(argc, argv, "C:L:vqVJ:FnU:",
 				long_options, NULL);
 
 		if (c == -1)
@@ -558,6 +561,9 @@ get_state(int argc, char **argv)
 			break;
 		case 'F':
 			force = 1;
+			break;
+		case 'U':
+			uuid = strdup(optarg);
 			break;
 		case 'n':
 			dry_run = 1;
@@ -643,8 +649,6 @@ get_state(int argc, char **argv)
 	s->initial_slots	= 1;
 
 	if (!uuid) {
-		fprintf(stderr, "%s:%d: no uuid specified, generate uuid.\n",
-			__func__, __LINE__);
 		uuid_generate(s->uuid);
 	} else {
 		if (strlen(uuid) == 32) {
@@ -747,8 +751,6 @@ fill_defaults(State *s)
 	uint64_t ret;
 	struct cmfs_cluster_group_sizes cgs;
 
-	blocksize = CMFS_MAX_BLOCKSIZE;
-
 	pagesize = getpagesize();
 	s->pagesize_bits = get_bits(s, pagesize);
 
@@ -768,11 +770,7 @@ fill_defaults(State *s)
 		sectsize = CMFS_MIN_BLOCKSIZE;
 
 
-	if (s->blocksize) {
-		fprintf(stderr, "%s:%d: blocksize is fixed to 4KB.\n", __func__, __LINE__);
-		blocksize = s->blocksize;
-	}
-
+	blocksize = s->blocksize;
 
 	if (blocksize < sectsize) {
 		com_err(s->progname, 0,
@@ -835,13 +833,6 @@ fill_defaults(State *s)
 	s->global_cpg = cgs.cgs_cpg;
 	s->nr_cluster_groups = cgs.cgs_cluster_groups;
 	s->tail_group_bits = cgs.cgs_tail_group_bits;
-
-	if (1) {
-		fprintf(stderr, "volume_size_in_clusters = %"PRIu64"\n", s->volume_size_in_clusters);
-		fprintf(stderr, "global_cpg = %u\n", s->global_cpg);
-		fprintf(stderr, "nr_cluster_groups = %u\n", s->nr_cluster_groups);
-		fprintf(stderr, "tail_group_bits = %u\n", s->tail_group_bits);
-	}
 
 	if (!s->vol_label)
 		s->vol_label = strdup("\0");
@@ -1644,7 +1635,20 @@ write_out:
 /* Currently we dont skip any feature bit */
 static int feature_skip(State *s, int system_inode)
 {
-	return 0;
+	int skip = 0;
+
+	switch (system_inode) {
+	case JOURNAL_SYSTEM_INODE:
+		if (!(s->feature_flags.opt_compat &
+		    CMFS_FEATURE_COMPAT_HAS_JOURNAL)) {
+			skip = 1;
+		}
+		break;
+	default:
+		break;
+	}
+
+	return skip;
 }
 
 static void write_bitmap_data(State *s, AllocBitmap *bitmap)

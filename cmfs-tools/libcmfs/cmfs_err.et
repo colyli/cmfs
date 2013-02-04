@@ -58,6 +58,9 @@ ec	CMFS_ET_CORRUPT_SUPERBLOCK,
 	"The CMFS superblock is corrupt"
 
 ec	CMFS_ET_UNSUPP_FEATURE,
+	"Unsupported feature(s) found"
+
+ec	CMFS_ET_UNSUPP_RO_FEATURE,
 	"Unsupported read-only feature(s) found"
 
 ec	CMFS_ET_CONFLICTING_FEATURES,
