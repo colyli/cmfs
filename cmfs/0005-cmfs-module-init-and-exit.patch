@@ -37,7 +37,97 @@ Index: linux-cmfs/fs/cmfs/super.c
  
  struct mount_options {
  	unsigned long commit_interval;
-@@ -914,6 +918,7 @@ static int cmfs_fill_super(struct super_
+@@ -290,13 +294,15 @@ static int cmfs_get_sector(struct super_
+ 		mlog(ML_ERROR, "unable to set blocksize\n");
+ 		return -EIO;
+ 	}
+-
+ 	*bh = sb_getblk(sb, block);
+ 	if (!*bh) {
+ 		mlog_errno(-EIO);
+ 		return -EIO;
+ 	}
+ 	lock_buffer(*bh);
++	if (!buffer_dirty(*bh))
++		clear_buffer_uptodate(*bh);
++	unlock_buffer(*bh);
+ 	ll_rw_block(READ, 1, bh);
+ 	wait_on_buffer(*bh);
+ 	if (!buffer_uptodate(*bh)) {
+@@ -314,7 +320,6 @@ static int cmfs_sb_probe(struct super_bl
+ {
+ 	int status;
+ 	struct cmfs_dinode *di;
+-
+ 	*bh = NULL;
+ 	status = cmfs_get_sector(sb,
+ 				 bh,
+@@ -324,14 +329,12 @@ static int cmfs_sb_probe(struct super_bl
+ 		mlog_errno(status);
+ 		goto bail;
+ 	}
+-
+ 	di = (struct cmfs_dinode *)(*bh)->b_data;
+ 	status = cmfs_verify_volume(di, *bh, CMFS_MAX_BLOCKSIZE);
+ 	if (status < 0) {
+ 		brelse(*bh);
+ 		*bh = NULL;
+ 	}
+-
+ bail:
+ 	return status;
+ }
+@@ -454,7 +457,6 @@ static int cmfs_init_global_system_inode
+ 	struct inode *new = NULL;
+ 	int status = 0;
+ 	int i;
+-
+ 	new = cmfs_iget(csb, csb->root_blkno, CMFS_FI_FLAG_SYSFILE, 0);
+ 	if (IS_ERR(new)) {
+ 		status = PTR_ERR(new);
+@@ -505,7 +507,6 @@ static int cmfs_initialize_super(struct
+ 	struct cmfs_journal *journal;
+ 	struct cmfs_super *csb;
+ 	u64 total_blocks;
+-
+ 	di = (struct cmfs_dinode *)bh->b_data;
+ 	csb = kzalloc(sizeof(struct cmfs_super), GFP_KERNEL);
+ 	if (!csb) {
+@@ -513,11 +514,10 @@ static int cmfs_initialize_super(struct
+ 		mlog_errno(status);
+ 		goto bail;
+ 	}
+-
++	sb->s_fs_info = csb;
+ 	if (CMFS_HAS_COMPAT_FEATURE(sb, CMFS_FEATURE_COMPAT_HAS_JOURNAL))
+ 		has_journal = 1;
+ 
+-	sb->s_fs_info = csb;
+ 	if (has_journal)
+ 		sb->s_op = &cmfs_sops;
+ 	else
+@@ -542,6 +542,12 @@ static int cmfs_initialize_super(struct
+ 	snprintf(csb->dev_str, sizeof(csb->dev_str), "%u,%u",
+ 		MAJOR(csb->sb->s_dev), MINOR(csb->sb->s_dev));
+ 
++	status = cmfs_recovery_init(csb);
++	if (status) {
++		mlog(ML_ERROR, "Unable to initialize recovery state\n");
++		mlog_errno(status);
++		goto bail;
++	}
+ 	init_waitqueue_head(&csb->checkpoint_event);
+ 	atomic_set(&csb->needs_checkpoint, 0);
+ 
+@@ -875,7 +881,6 @@ static void cmfs_delete_csb(struct cmfs_
+ static void cmfs_dismount_volume(struct super_block *sb, int mnt_err)
+ {
+ 	struct cmfs_super *csb = NULL;
+-
+ 	csb = CMFS_SB(sb);
+ 	BUG_ON(!csb);
+ 
+@@ -914,17 +919,16 @@ static int cmfs_fill_super(struct super_
  	struct cmfs_super *csb = NULL;
  	struct buffer_head *bh = NULL;
  
@@ -45,10 +135,78 @@ Index: linux-cmfs/fs/cmfs/super.c
  	if (!cmfs_parse_options(sb, data, &parsed_options, 0)) {
  		status = -EINVAL;
  		goto read_super_error;
-@@ -1024,3 +1029,119 @@ read_super_error:
- 
+ 	}
+-
+ 	status = cmfs_sb_probe(sb, &bh);
+ 	if (status < 0) {
+ 		mlog(ML_ERROR, "superblock probe failed!\n");
+ 		goto read_super_error;
+ 	}
+-
+ 	status = cmfs_initialize_super(sb, bh);
+ 	csb = CMFS_SB(sb);
+ 	if (status < 0) {
+@@ -933,14 +937,11 @@ static int cmfs_fill_super(struct super_
+ 	}
+ 	brelse(bh);
+ 	bh = NULL;
+-
+ 	csb->s_mount_opt = parsed_options.mount_opt;
+ 	csb->s_atime_quantum = parsed_options.atime_quantum;
+ 	csb->csb_commit_interval = parsed_options.commit_interval;
+-
+ 	cmfs_la_set_sizes(csb, parsed_options.localalloc_opt);
+ 	sb->s_magic = CMFS_SUPER_MAGIC;
+-
+ 	/* hard readonly mode only if: bdev_read_only, MS_RDONLY */
+ 	if (bdev_read_only(sb->s_bdev)) {
+ 		if (!(sb->s_flags & MS_RDONLY)) {
+@@ -975,39 +976,30 @@ static int cmfs_fill_super(struct super_
+ 		if (sb->s_flags & MS_RDONLY)
+ 			cmfs_set_ro_flag(csb, CMFS_SOFT_READONLY);
+ 	}
+-
+ 	status = cmfs_mount_volume(sb);
+ 	if (status < 0)
+ 		goto read_super_error;
+-
+ 	if (csb->root_inode)
+ 		inode = igrab(csb->root_inode);
+-
+ 	if (!inode) {
+ 		status = -EIO;
+ 		mlog_errno(status);
+ 		goto read_super_error;
+ 	}
+-
+ 	root = d_make_root(inode);
+ 	if (!root) {
+ 		status = -ENOMEM;
+ 		mlog_errno(status);
+ 		goto read_super_error;
+ 	}
+-
+ 	sb->s_root = root;
+-
+ 	cmfs_complete_mount_recovery(csb);
+-
+ 	printk(KERN_INFO "cmfs: Mounting device (%s) with %s data mode.\n",
+ 	       csb->dev_str,
+ 	       (csb->s_mount_opt & CMFS_MOUNT_DATA_WRITEBACK) ?
+ 	       "writeback" : "ordered");
+-
+ 	atomic_set(&csb->vol_state, VOLUME_MOUNTED);
+ 	wake_up(&csb->csb_mount_event);
+-
  	return status;
- }
+ 
+ read_super_error:
+@@ -1021,6 +1013,121 @@ read_super_error:
+ 
+ 	if (status)
+ 		mlog_errno(status);
++	return status;
++}
 +
 +static void cmfs_inode_init_once(void *data)
 +{
@@ -69,7 +227,7 @@ Index: linux-cmfs/fs/cmfs/super.c
 +
 +	inode_init_once(&ci->vfs_inode);
 +}
-+
+ 
 +static int cmfs_initialize_mem_caches(void)
 +{
 +	cmfs_inode_cachep = kmem_cache_create("cmfs_inode_cache",
@@ -149,8 +307,8 @@ Index: linux-cmfs/fs/cmfs/super.c
 +	cmfs_free_mem_caches();
 +out1:
 +	mlog_errno(status);
-+	return status;
-+}
+ 	return status;
+ }
 +
 +static void __exit cmfs_exit(void)
 +{
@@ -359,3 +517,48 @@ Index: linux-cmfs/fs/cmfs/localalloc.c
  {
  	return -1;
  }
+Index: linux-cmfs/fs/cmfs/journal.h
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/journal.h
++++ linux-cmfs/fs/cmfs/journal.h
+@@ -82,6 +82,7 @@ int cmfs_journal_wipe(struct cmfs_journa
+ int cmfs_journal_load(struct cmfs_journal *journal, int replayed);
+ void cmfs_journal_shutdown(struct cmfs_super *csb);
+ void cmfs_complete_mount_recovery(struct cmfs_super *csb);
++int cmfs_recovery_init(struct cmfs_super *csb);
+ void cmfs_recovery_exit(struct cmfs_super *csb);
+ void cmfs_set_journal_params(struct cmfs_super *csb);
+ 
+Index: linux-cmfs/fs/cmfs/cmfs.h
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/cmfs.h
++++ linux-cmfs/fs/cmfs/cmfs.h
+@@ -49,6 +49,7 @@
+ 
+ #define CMFS_DEFAULT_ATIME_QUANTUM	60
+ 
++#define DEBUG printk(KERN_INFO "%s:%s:%d cmfs DEBUG\n", __FILE__, __func__, __LINE__);
+ 
+ enum cmfs_caching_info_flags {
+ 	/* indicates that the metadata cache is using the inline array */
+Index: linux-cmfs/fs/cmfs/journal.c
+===================================================================
+--- linux-cmfs.orig/fs/cmfs/journal.c
++++ linux-cmfs/fs/cmfs/journal.c
+@@ -434,6 +434,16 @@ static int cmfs_recovery_thread_running(
+ 	return (csb->recovery_thread_task != NULL);
+ }
+ 
++int cmfs_recovery_init(struct cmfs_super *csb)
++{
++	mutex_init(&csb->recovery_lock);
++	csb->disable_recovery = 0;
++	csb->recovery_thread_task = NULL;
++	init_waitqueue_head(&csb->recovery_event);
++
++	return 0;
++}
++
+ void cmfs_recovery_exit(struct cmfs_super *csb)
+ {
+ 	/*
