@@ -35,6 +35,7 @@ AC_OUTPUT([Makefile
 	   libtools-internal/Makefile
 	   libcmfs/Makefile
 	   mkfs.cmfs/Makefile
+	   debugfs.cmfs/Makefile
 	   dumpcmfs/Makefile
 	   misc/Makefile
 	   ])
