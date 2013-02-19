@@ -29,6 +29,7 @@
 #ifndef _FILESYS_H
 #define _FILESYS_H
 
+
 #include <stdint.h>
 #include <et/com_err.h>
 #include <cmfs-kernel/cmfs_fs.h>
@@ -57,6 +58,15 @@
 
 /* define CMFS_SB for cmfs-tools */
 #define CMFS_SB(sb)	(sb)
+
+enum cmfs_block_type {
+	CMFS_BLOCK_UNKNOW,
+	CMFS_BLOCK_INODE,
+	CMFS_BLOCK_SUPERBLOCK,
+	CMFS_BLOCK_EXTENT_BLOCK,
+	CMFS_BLOCK_GROUP_DESCRIPTOR,
+	CMFS_BLOCK_DIR_BLOCK,
+};
 
 
 typedef struct _cmfs_filesys cmfs_filesys;
@@ -118,7 +128,7 @@ static inline void cmfs_calc_cluster_groups(
 					uint64_t blocksize,
 					struct cmfs_cluster_group_sizes *cgs)
 {
-	uint32_t max_bits = 8 * cmfs_group_bitmap_size(blocksize, 0, 0);
+	uint32_t max_bits = 8 * cmfs_group_bitmap_size(blocksize, 0);
 
 	cgs->cgs_cpg = max_bits;
 	if (max_bits > clusters)
@@ -210,7 +220,100 @@ errcode_t cmfs_parse_feature(const char *opts,
 errcode_t cmfs_merge_feature_with_default_flags(cmfs_fs_options *dest,
 						cmfs_fs_options *feature_set,
 						cmfs_fs_options *reverse_set);
+errcode_t cmfs_read_extent_block(cmfs_filesys *fs,
+				 uint64_t blkno,
+				 char *eb_buf);
+errcode_t cmfs_lookup(cmfs_filesys *fs,
+		      uint64_t dir,
+		      const char *name,
+		      int namelen,
+		      char *buf,
+		      uint64_t *inode);
+errcode_t cmfs_check_directory(cmfs_filesys *fs,
+			       uint64_t dir);
+errcode_t cmfs_dir_iterate(cmfs_filesys *fs,
+			   uint64_t dir,
+			   int flags,
+			   char *block_buf,
+			   int (*func)(struct cmfs_dir_entry *dirent,
+				       uint64_t blocknr,
+				       int offset,
+				       int blocksize,
+				       char *buf,
+				       void *prov_data),
+			   void *priv_data);
+errcode_t cmfs_read_inode(cmfs_filesys *fs,
+			  uint64_t blkno,
+			  char *inode_buf);
+errcode_t cmfs_read_group_desc(cmfs_filesys *fs,
+			       uint64_t blkno,
+			       char *gd_buf);
+errcode_t cmfs_read_dir_block(cmfs_filesys *fs,
+			      struct cmfs_dinode *di,
+			      uint64_t block,
+			      void *buf);
+errcode_t cmfs_block_iterate(cmfs_filesys *fs,
+			     uint64_t blkno,
+			     int flags,
+			     int (*func)(cmfs_filesys *fs,
+				         uint64_t blkno,
+					 uint64_t bcount,
+					 uint16_t ext_flags,
+					 void *priv_data),
+			     void *priv_data);
+errcode_t cmfs_block_iterate_inode(cmfs_filesys *fs,
+				   struct cmfs_dinode *inode,
+				   int flags,
+				   int (*func)(cmfs_filesys *fs,
+					       uint64_t blkno,
+					       uint64_t bcount,
+					       uint16_t ext_flags,
+					       void *priv_data),
+				   void *priv_data);
+errcode_t cmfs_block_iterate_inode(cmfs_filesys *fs,
+				   struct cmfs_dinode *inode,
+				   int flags,
+				   int (*func)(cmfs_filesys *fs,
+					       uint64_t blkno,
+					       uint64_t bcount,
+					       uint16_t ext_flags,
+					       void *priv_data),
+				   void *priv_data);
+errcode_t cmfs_snprint_extent_flags(char *str,
+				    size_t size,
+				    uint8_t flags);
+errcode_t cmfs_read_cached_inode(cmfs_filesys *fs,
+				 uint64_t blkno,
+				 cmfs_cached_inode **ret_ci);
+errcode_t cmfs_file_read(cmfs_cached_inode *ci,
+			 void *buf,
+			 uint32_t count,
+			 uint64_t offset,
+			 uint32_t *got);
+errcode_t cmfs_free_cached_inode(cmfs_filesys *fs,
+				 cmfs_cached_inode *cinode);
+errcode_t cmfs_read_dir_block(cmfs_filesys *fs,
+			      struct cmfs_dinode *di,
+			      uint64_t block,
+			      void *buf);
+errcode_t cmfs_snprint_feature_flags(char *str,
+				     size_t size,
+				     cmfs_fs_options *flags);
 
+/*
+ * ${foo}_to_${bar} is a floor function. blocks_to_clusters() will
+ * return the cluster that contains a block, not the number of clusters
+ * that hold a given number of blocks.
+ *
+ * ${foo}_in_${bar} is a ceiling function. clusters_in_blocks()
+ * will give the number of clusters needed to hold a given number
+ * of blocks.
+ *
+ * These functions return UINTxx_MAX when they overflow, but UINTxx_MAX
+ * cannot be used to check overflow. UINTxx_MAX is a valid value in
+ * much of cmfs. the caller is responsible for preventing overflow
+ * before using these function.
+ */
 
 static inline uint64_t cmfs_clusters_to_blocks(cmfs_filesys *fs,
 					       uint32_t clusters)
@@ -221,6 +324,21 @@ static inline uint64_t cmfs_clusters_to_blocks(cmfs_filesys *fs,
 
 	return (uint64_t)(clusters << c_to_b_bits);
 }
+
+static inline uint32_t cmfs_blocks_to_clusters(cmfs_filesys *fs,
+					       uint64_t blocks)
+{
+	int b_to_c_bits =
+		CMFS_RAW_SB(fs->fs_super)->s_clustersize_bits -
+		CMFS_RAW_SB(fs->fs_super)->s_blocksize_bits;
+	uint64_t ret = blocks >> b_to_c_bits;
+
+	if (ret > UINT32_MAX)
+		ret = UINT32_MAX;
+
+	return (uint32_t)ret;
+}
+
 
 static inline int cmfs_meta_ecc(struct cmfs_super_block *csb)
 {
@@ -257,19 +375,54 @@ static inline int cmfs_swap_barrier(cmfs_filesys *fs,
 	return (end > limit);
 }
 
-static inline void cmfs_set_rec_clusters(cmfs_filesys *fs,
-				        uint16_t tree_depth,
-					struct cmfs_extent_rec *rec,
-					uint32_t clusters)
+/*
+ * Helper function to look at the # of clusters in an extent record
+ */
+static inline uint32_t cmfs_rec_clusters(cmfs_filesys *fs,
+					 uint16_t tree_depth,
+					 struct cmfs_extent_rec *rec)
 {
+	uint64_t ret;
+	/*
+	 * Cluster count in extent records is slightly different
+	 * between interior nodes and leaf nodes. This is to
+	 * support unwritten extents which need a flags field
+	 * in leaf node records, thus shrinking the available
+	 * space for a clusters field.
+	 */
 	if (tree_depth)
-		rec->e_int_clusters = clusters;
+		ret = rec->e_int_blocks;
 	else
-		rec->e_leaf_blocks =
-			cmfs_clusters_to_blocks(fs, clusters);
+		ret = rec->e_leaf_blocks;
+	
+	return (uint32_t)cmfs_blocks_to_clusters(
+					fs, ret);
 }
 
+static inline uint32_t cmfs_clusters_in_bytes(cmfs_filesys *fs,
+					      uint64_t bytes)
+{
+	uint64_t ret = bytes + fs->fs_clustersize - 1;
+	if (ret < bytes) /* deal with wrapping */
+		ret = UINT64_MAX;
 
+	ret = ret >> CMFS_RAW_SB(fs->fs_super)->s_clustersize_bits;
+	if (ret > UINT32_MAX)
+		ret = UINT32_MAX;
+
+	return (uint32_t)ret;
+}
+
+static inline void cmfs_set_rec_blocks(cmfs_filesys *fs,
+				        uint16_t tree_depth,
+					struct cmfs_extent_rec *rec,
+					uint32_t blocks)
+{
+	if (tree_depth)
+		rec->e_int_blocks = blocks;
+	else
+		rec->e_leaf_blocks = blocks;
+}
 
 
 

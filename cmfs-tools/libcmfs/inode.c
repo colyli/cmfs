@@ -244,6 +244,18 @@ void cmfs_swap_inode_to_cpu(cmfs_filesys *fs, struct cmfs_dinode *di)
 		cmfs_swap_extent_list_to_cpu(fs, di, &di->id2.i_list);
 }
 
+errcode_t cmfs_check_directory(cmfs_filesys *fs,
+			       uint64_t dir)
+{
+	return -1;
+}
+
+errcode_t cmfs_read_inode(cmfs_filesys *fs,
+			  uint64_t blkno,
+			  char *inode_buf)
+{
+	return -1;
+}
 
 
 

@@ -62,3 +62,10 @@ void cmfs_swap_group_desc_to_cpu(cmfs_filesys *fs,
 
 	cmfs_swap_group_desc_header(gd);
 }
+
+errcode_t cmfs_read_group_desc(cmfs_filesys *fs,
+			       uint64_t blkno,
+			       char *gd_buf)
+{
+	return -1;
+}

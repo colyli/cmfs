@@ -69,4 +69,13 @@ ec	CMFS_ET_CONFLICTING_FEATURES,
 ec	CMFS_ET_BAD_MAGIC,
 	"Bad magic number in superblock"
 
+ec	CMFS_ET_BAD_INODE_MAGIC,
+	"Bad magic number in inode"
+
+ec	CMFS_ET_BAD_BLKNO,
+	"Invalid block number"
+
+ec	CMFS_ET_NO_SPACE,
+	"No space available"
+
 	end

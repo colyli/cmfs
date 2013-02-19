@@ -1,9 +1,8 @@
 #include <string.h>
 
-
+#include <cmfs-kernel/cmfs_fs.h>
 #include <cmfs/bitmap.h>
 #include <cmfs/cmfs.h>
-#include <cmfs-kernel/cmfs_fs.h>
 #include <cmfs/byteorder.h>
 
 #include "cmfs_err.h"
@@ -135,4 +134,12 @@ errcode_t cmfs_swap_dir_entries_from_cpu(void *buf, uint64_t bytes)
 errcode_t cmfs_swap_dir_entries_to_cpu(void *buf, uint64_t bytes)
 {
 	return cmfs_swap_dir_entries_direction(buf, bytes, 1);
+}
+
+errcode_t cmfs_read_dir_block(cmfs_filesys *fs,
+			      struct cmfs_dinode *di,
+			      uint64_t block,
+			      void *buf)
+{
+	return -1;
 }

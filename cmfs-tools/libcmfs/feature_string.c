@@ -242,8 +242,144 @@ errcode_t cmfs_merge_feature_with_default_flags(
 	return 0;
 }
 
+static errcode_t cmfs_snprint_flag_names(struct flag_name *flag_names,
+					 char *str,
+					 size_t size,
+					 uint32_t flags)
+{
+	int i, printed;
+	char *ptr = str;
+	size_t remain = size;
+	errcode_t err = 0;
+	char *sep = " ";
+	uint16_t found = 0;
+
+	for (i = 0; flag_names[i].fl_name; i++) {
+		if (!(flags & flag_names[i].fl_flag))
+			continue;
+
+		found |= flag_names[i].fl_flag;
+
+		printed = snprintf(ptr, remain, "%s%s",
+				   ptr == str ? "" : sep,
+				   flag_names[i].fl_name);
+		if (printed < 0)
+			err = CMFS_ET_INTERNAL_FAILURE;
+		else if (printed >= remain)
+			err = CMFS_ET_NO_SPACE;
+
+		if (err)
+			break;
+
+		remain -= printed;
+		ptr += printed;
+	}
+
+	if (!err) {
+		if (!found != flags) {
+			printed = snprintf(ptr, remain, "%sunknow",
+					   ptr == str ? "" : sep);
+			if (printed < 0)
+				err = CMFS_ET_INTERNAL_FAILURE;
+			else if (printed >= remain)
+				err = CMFS_ET_NO_SPACE;
+		}
+	}
+
+	return err;
+}
+
+/*
+ * The printable names of every flag in e_flags. If libcmfs supports the flag,
+ * its name must be here.
+ *
+ * These MUST be kept in sync with the flags in cmfs_fs.h
+ */
+static struct flag_name cmfs_extent_flag_names[] = {
+	{
+		.fl_name = "Unwritten",
+		.fl_flag = CMFS_EXT_UNWRITTEN,
+	},
+	{
+		.fl_name = NULL,
+	},
+};
 
 
+errcode_t cmfs_snprint_extent_flags(char *str, size_t size, uint8_t flags)
+{
+	return cmfs_snprint_flag_names(cmfs_extent_flag_names,
+				       str,
+				       size,
+				       (uint32_t)flags);
+}
+
+/*
+ * These are the printable names of all flags in s_feature_compat,
+ * s_feature_ro_compat, and s_feature_incompat. If libcmfs supports
+ * this feature, its printable name must be here.
+ *
+ * These MUST be kept in sync with the flags in cmfs_fs.h
+ */
+static struct feature_name cmfs_feature_names[] = {
+	{
+		.fn_name = "backup-super",
+		.fn_flag = {CMFS_FEATURE_COMPAT_BACKUP_SB, 0, 0},
+	},
+	{
+		.fn_name = "journal",
+		.fn_flag = {CMFS_FEATURE_COMPAT_HAS_JOURNAL, 0, 0},
+	},
+	{
+		.fn_name = NULL,
+	},
+};
+
+errcode_t cmfs_snprint_feature_flags(char *str,
+				     size_t size,
+				     cmfs_fs_options *flags)
+{
+	int i, printed;
+	char *ptr = str;
+	size_t remain = size;
+	errcode_t err = 0;
+	char *sep = " ";
+	cmfs_fs_options found = {0, 0, 0}; 
+	
+	for (i = 0; cmfs_feature_names[i].fn_name; i++) {
+		if (!feature_match(flags, &cmfs_feature_names[i].fn_flag))
+			continue;
+		merge_features(&found, cmfs_feature_names[i].fn_flag);
+
+		printed = snprintf(ptr, remain, "%s%s",
+				   ptr == str ? "" : sep,
+				   cmfs_feature_names[i].fn_name);
+
+		if (printed < 0)
+			err = CMFS_ET_INTERNAL_FAILURE;
+		else if (printed >= remain)
+			err = CMFS_ET_NO_SPACE;
+		if (err)
+			break;
+
+		remain -= printed;
+		ptr += printed;
+	}
+	
+	if (!err) {
+		if ((found.opt_compat != flags->opt_compat) ||
+		    (found.opt_ro_compat != flags->opt_ro_compat) ||
+		    (found.opt_incompat != flags->opt_incompat)) {
+			printed = snprintf(ptr, remain, "%sunknow",
+					   ptr == str ? "" : sep);
+			if (printed < 0)
+				err = CMFS_ET_INTERNAL_FAILURE;
+			else if (printed >= remain)
+				err = CMFS_ET_NO_SPACE;
+		}
+	}
+	return err;
+}
 
 
 
