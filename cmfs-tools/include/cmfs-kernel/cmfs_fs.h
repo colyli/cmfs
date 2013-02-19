@@ -27,16 +27,20 @@
 #ifndef _CMFS_FS_H
 #define _CMFS_FS_H
 
+#include <sys/stat.h>
 #include <linux/types.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
+
+typedef uint8_t u8;
 
 /* Version */
 #define CMFS_MAJOR_REV_LEVEL		0
 #define CMFS_MINOR_REV_LEVEL		1
 
-/* XXX: currently hard code to 2 */
-#define CMFS_PER_CPU_NUM		2
+/* XXX: currently hard code to 1 */
+#define CMFS_PER_CPU_NUM		1
 /*
  * A CMFS volume starts this way:
  * Sector 0: Valid cmfs_vol_disk_hdr
@@ -56,10 +60,24 @@
 #define CMFS_MAX_VOL_ID_LENGTH		 16
 #define CMFS_VOL_UUID_LEN		 16
 #define CMFS_MAX_FILENAME_LEN		255
+/* Journal limits (in bytes) */
+#define CMFS_MIN_JOURNAL_SIZE		(4*1024*1024)
 
 /* Slot map indicator for an empty slot */
 #define CMFS_INVALID_SLOT		-1
 #define CMFS_MAX_SLOTS			255
+
+/*
+ * Extent record flags (e.node.leaf.flags)
+ */
+#define CMFS_EXT_UNWRITTEN	(0x01)	/* Extent is allocated but
+					 * unwritten */
+
+/* Journal flags (cmfs_dinode.id1.journal1.i_flags) */
+#define CMFS_JOURNAL_DIRTY_FL	(0x00000001)	/* Journal needs recovery */
+/* superblock s_state flags */
+#define CMFS_ERROR_FS		(0x00000001)	/* FS saw errors */
+
 
 /*
  * Min block size = Max block size = 4KB
@@ -73,6 +91,10 @@
 #define CMFS_DEFAULT_CLUSTERSIZE	(1<<20)
 #define CMFS_MAX_BLOCKSIZE		CMFS_MIN_CLUSTERSIZE
 #define CMFS_MIN_BLOCKSIZE		CMFS_MAX_BLOCKSIZE
+
+/* Filesystem magic number
+ * ASCII code of CMFS is 103(0x67), 115(0x73), 106(0x6a), 123(0x7b) */
+#define CMFS_SUPER_MAGIC	0x67736a7b
 
 /* Signature strings */
 #define CMFS_SUPER_BLOCK_SIGNATURE	"CMFSV1"
@@ -148,8 +170,24 @@
 
 
 #define CMFS_RAW_SB(dinode)	(&((dinode)->id2.i_super))
-#define CMFS_HAS_COMPAT_FEATURE(sb, mask) \
+#define CMFS_HAS_COMPAT_FEATURE(sb, mask)		\
 	(CMFS_SB(sb)->s_feature_compat & (mask))
+#define CMFS_HAS_RO_COMPAT_FEATURE(sb, mask)		\
+	(CMFS_SB(sb)->s_feature_ro_compat & (mask))
+#define CMFS_HAS_INCOMPAT_FEATURE(sb, mask)		\
+	(CMFS_SB(sb)->s_feature_incompat & (mask))
+#define CMFS_SET_COMPAT_FEATURE(sb, mask)		\
+	(CMFS_SB(sb)->s_feature_compat |= (mask))
+#define CMFS_SET_RO_COMPAT_FEATURE(sb, mask)		\
+	(CMFS_SB(sb)->s_feature_ro_compat |= (mask))
+#define CMFS_SET_INCOMPAT_FEATURE(sb, mask)		\
+	(CMFS_SB(sb)->s_feature_incompat |= (mask))
+#define CMFS_CLEAR_COMPAT_FEATURE(sb, mask)		\
+	(CMFS_SB(sb)->s_feature_compat &= ~(mask))
+#define CMFS_CLEAR_RO_COMPAT_FEATURE(sb, mask)		\
+	(CMFS_SB(sb)->s_feature_ro_compat &= ~(mask))
+#define CMFS_CLEAR_INCOMPAT_FEATURE(sb, mask)		\
+	(CMFS_SB(sb)->s_feature_incompat &= ~(mask))
 
 
 /* Compatibility flags */
@@ -164,14 +202,28 @@
 #define CMFS_FEATURE_COMPAT_RESIZE_INPROG	0x0100
 
 
+#define CMFS_FEATURE_COMPAT_SUPP	(CMFS_FEATURE_COMPAT_BACKUP_SB \
+					 | CMFS_FEATURE_COMPAT_HAS_JOURNAL \
+					 | CMFS_FEATURE_COMPAT_INLINE_DATA \
+					 | CMFS_FEATURE_COMPAT_META_ECC \
+					 | CMFS_FEATURE_COMPAT_INDEXED_DIRS \
+					 | CMFS_FEATURE_COMPAT_REFCOUNT_TREE \
+					 | CMFS_FEATURE_COMPAT_UNWRITTEN)
+#define CMFS_FEATURE_INCOMPAT_SUPP	0x0
+#define CMFS_FEATURE_RO_COMPAT_SUPP	0x0
+
+
+
+
 
 /* System file index */
 enum {
 	BAD_BLOCK_SYSTEM_INODE = 0,
 	GLOBAL_INODE_ALLOC_SYSTEM_INODE,
+#define CMFS_FIRST_ONLINE_SYSTEM_INODE GLOBAL_INODE_ALLOC_SYSTEM_INODE
 	GLOBAL_BITMAP_SYSTEM_INODE,
 #define CMFS_LAST_GLOBAL_SYSTEM_INODE GLOBAL_BITMAP_SYSTEM_INODE
-//	ORPHAN_DIR_SYSTEM_INODE,
+/*	ORPHAN_DIR_SYSTEM_INODE, */
 #define CMFS_FIRST_LOCAL_SYSTEM_INODE EXTENT_ALLOC_SYSTEM_INODE
 	EXTENT_ALLOC_SYSTEM_INODE,
 	INODE_ALLOC_SYSTEM_INODE,
@@ -185,22 +237,39 @@ enum {
 #define NUM_LOCAL_SYSTEM_INODES \
 		(NUM_SYSTEM_INODES - CMFS_FIRST_LOCAL_SYSTEM_INODE)
 
+struct cmfs_system_inode_info {
+	char *si_name;
+	int si_iflags;
+	int si_mode;
+};
+
+static struct cmfs_system_inode_info cmfs_system_inodes[NUM_SYSTEM_INODES] = {
+	/* Global system inodes (single copy) */
+	/* The first two are only used from userspace mkfs/tunefs */
+	[BAD_BLOCK_SYSTEM_INODE]	= {"bad_blocks", 0, S_IFREG | 0644},
+	[GLOBAL_INODE_ALLOC_SYSTEM_INODE] = {"global_inode_alloc", CMFS_BITMAP_FL | CMFS_CHAIN_FL, S_IFREG | 0644},
+	[GLOBAL_BITMAP_SYSTEM_INODE]	= {"global_bitmap", 0, S_IFREG | 0644},
+	[EXTENT_ALLOC_SYSTEM_INODE]	= {"extent_alloc", CMFS_BITMAP_FL | CMFS_CHAIN_FL, S_IFREG | 0644},
+	[INODE_ALLOC_SYSTEM_INODE]	= {"inode_alloc", CMFS_BITMAP_FL | CMFS_CHAIN_FL, S_IFREG | 0644},
+	[JOURNAL_SYSTEM_INODE]		= {"journal", CMFS_JOURNAL_FL, S_IFREG | 0644},
+	[LOCAL_ALLOC_SYSTEM_INODE]	= {"local_alloc", CMFS_BITMAP_FL | CMFS_LOCAL_ALLOC_FL, S_IFREG | 0644},
+};
 /*
  * CMFS volume header, lives at sector 0.
  */
 struct cmfs_vol_disk_hdr {
-	uint8_t signature[CMFS_MAX_VOL_SIGNATURE_LEN];
-	uint8_t mount_point[CMFS_MAX_MOUNT_POINT_LEN];
+	u8 signature[CMFS_MAX_VOL_SIGNATURE_LEN];
+	u8 mount_point[CMFS_MAX_MOUNT_POINT_LEN];
 };
 
 /*
  * CMFS volume label, lives at sector 1.
  */
 struct cmfs_vol_label {
-	uint8_t label[CMFS_MAX_VOL_LABEL_LEN];
-	uint16_t label_len;
-	uint8_t vol_id[CMFS_MAX_VOL_ID_LENGTH];
-	uint16_t vol_id_len;
+	u8	label[CMFS_MAX_VOL_LABEL_LEN];
+	__le16	label_len;
+	u8	vol_id[CMFS_MAX_VOL_ID_LENGTH];
+	__le16	vol_id_len;
 };
 
 /*
@@ -226,14 +295,14 @@ struct cmfs_extent_rec {
 /*00*/	__le64 e_cpos;		/* Offset into the file, in clusters */
 /*08*/	__le64 e_blkno;		/* Physical disk offset, in blocks */
 /*10*/	union {
-		__le64 e_int_clusters;	/* Clusters covered by all children */
-//		__le64 e_int_blocks;	/* blocks covered by all children */
+//		__le64 e_int_clusters;	/* Clusters covered by all children */
+		__le64 e_int_blocks;	/* blocks covered by all children */
 		struct {
 			__le32 e_leaf_blocks;	/* blocks covered by this extent
 		       				   for 4KB block, the max length
 						   of single extent is 16TB */
-			uint8_t e_flags;	/* extent flags */
-			uint8_t e_reserved1;
+			u8	e_flags;	/* extent flags */
+			u8	e_reserved1;
 			__le16	e_reserved2;
 			__le64	e_reserved3;
 		};
@@ -294,7 +363,7 @@ struct cmfs_local_alloc {
 /*00*/	__le32 la_bm_off;	/* Starting bit offset in main bitmap */
 	__le16 la_size;		/* Size of included bitmap, in bytes */
 	__le16 la_reserved1[5];
-/*10*/	uint8_t	la_bitmap[0];
+/*10*/	u8	la_bitmap[0];
 };
 
 /*
@@ -322,10 +391,28 @@ struct cmfs_truncate_log {
  * has CMFS_INLINE_DATA_FL set
  */
 struct cmfs_inline_data {
-/*00*/	__le16 id_count;	/* Number of bytes can be used for data,
+/*00*/	__le16	id_count;	/* Number of bytes can be used for data,
 				   starting at id_data */
-	__le16 id_reserved1[3];
-/*08*/	uint8_t id_data[0];	/* Start of user data */
+	__le16	id_reserved1[3];
+/*08*/	u8	id_data[0];	/* Start of user data */
+};
+
+/*
+ * On disk extent block (indirect block) for CMFS
+ */
+struct cmfs_extent_block {
+	uint8_t h_signature[8];		/* Signature for verification */
+	__le16 h_suballoc_slot;		/* Slot suballocator this
+					   extent_header belongs to */
+	__le16 h_suballoc_bit;		/* Bit offset in suballocator
+					   block group */
+	__le32 h_fs_generation;		/* Must match super block */
+	__le64 h_blkno;			/* Offset on disk, in blocks */
+	__le64 h_next_leaf_block;	/* Offset on disk, in blocks,
+					   of next leaf header pointing
+					   to data */
+	struct cmfs_extent_list h_list;	/* Extent record list */
+/* Actual on-disk size is one block */
 };
 
 /*
@@ -334,67 +421,70 @@ struct cmfs_inline_data {
  * are relative to the start of cmfs_dinode.id2.
  */
 struct cmfs_super_block {
-/*00*/	__le16 s_major_rev_level;
-	__le16 s_minor_rev_level;
-	__le16 s_mnt_count;
-	__le16 s_max_mnt_count;
-	__le16 s_state;
-	__le16 s_errors;
-	__le32 s_checkinterval;
-/*10*/	__le64 s_lastcheck;
-	__le32 s_creator_os;
-	__le32 s_feature_compat;
-/*20*/	__le32 s_feature_incompat;
-	__le32 s_feature_ro_compat;
-	__le64 s_root_blkno;
-/*30*/	__le64 s_system_dir_blkno;
-	__le32 s_blocksize_bits;
-	__le32 s_clustersize_bits;
-/*40*/	uint8_t s_label[CMFS_MAX_VOL_LABEL_LEN];
-/*80*/	uint8_t s_uuid[CMFS_VOL_UUID_LEN];
-/*90*/	__le16 s_tunefs_flag;
-	__le16 s_xattr_inline_size;
-	__le32 s_uuid_hash;
-	__le64 s_first_cluster_group;
+/*00*/	__le16	s_major_rev_level;
+	__le16	s_minor_rev_level;
+	__le16	s_mnt_count;
+	__le16	s_max_mnt_count;
+	__le16	s_state;
+	__le16	s_errors;
+	__le32	s_checkinterval;
+/*10*/	__le64	s_lastcheck;
+	__le32	s_creator_os;
+	__le32	s_feature_compat;
+/*20*/	__le32	s_feature_incompat;
+	__le32	s_feature_ro_compat;
+	__le64	s_root_blkno;
+/*30*/	__le64	s_system_dir_blkno;
+	__le32	s_blocksize_bits;
+	__le32	s_clustersize_bits;
+/*40*/	u8	s_label[CMFS_MAX_VOL_LABEL_LEN];
+/*80*/	u8	s_uuid[CMFS_VOL_UUID_LEN];
+/*90*/	__le16	s_tunefs_flag;
+	__le16	s_xattr_inline_size;
+	__le32	s_uuid_hash;
+	__le64	s_first_cluster_group;
 /*A0*/
-/* XXXX: should pad all rest space of dinode which contains the super block to zero */
+/*
+ * XXXX: should pad all rest space of dinode which contains the super
+ * block to zero
+ */
 };
-
 
 /*
  * On disk CMFS inode format
  */
 struct cmfs_dinode {
-/*00*/	uint8_t i_signature[8];		/* Signature for validation */
-	__le32 i_generation;		/* Generation number */
-	__le32 i_links_count;		/* Links count */
-/*10*/	__le32 i_uid;			/* Owner UID */
-	__le32 i_gid;			/* Owner GID */
-	__le64 i_size;
-/*20*/	__le64 i_atime;
-	__le64 i_ctime;
-/*30*/	__le64 i_mtime;
-	__le64 i_dtime;
-/*40*/	__le32 i_flags;
-	__le16 i_mode;
-	__le16 i_suballoc_slot;		/* Slot suballocator this inode
+/*00*/	u8	i_signature[8];		/* Signature for validation */
+	__le32	i_generation;		/* Generation number */
+	__le32	i_links_count;		/* Links count */
+/*10*/	__le32	i_uid;			/* Owner UID */
+	__le32	i_gid;			/* Owner GID */
+	__le64	i_size;
+/*20*/	__le64	i_atime;
+	__le64	i_ctime;
+/*30*/	__le64	i_mtime;
+	__le64	i_dtime;
+/*40*/	__le32	i_flags;
+	__le16	i_mode;
+	__le16	i_suballoc_slot;		/* Slot suballocator this inode
 					   belongs to */
-	__le64 i_blkno;
-/*50*/	__le32 i_clusters;		/* Cluster count */
-	__le32 i_fs_generation;
-	__le64 i_last_eb_blk;
-/*60*/	__le32 i_atime_nsec;
-	__le32 i_ctime_nsec;
-	__le32 i_mtime_nsec;
-	__le32 i_attr;
-/*70*/	__le64 i_xattr_loc;
-	__le64 i_refcount_loc;
-/*80*/	__le64 i_suballoc_loc;
+	__le64	i_blkno;
+/*50*/	__le32	i_clusters;		/* Cluster count */
+	__le32	i_fs_generation;
+	__le64	i_last_eb_blk;
+/*60*/	__le32	i_atime_nsec;
+	__le32	i_ctime_nsec;
+	__le32	i_mtime_nsec;
+	__le32	i_attr;
+/*70*/	__le64	i_xattr_loc;
+	__le64	i_refcount_loc;
+/*80*/	__le64	i_suballoc_loc;
 /*88*/ struct cmfs_block_check i_check;
-/*90*/	__le16 i_dyn_features;
-	__le16 i_xattr_inline_size;
-	__le16 i_suballoc_bit;	/* XXX: will move it to the location after i_suballoc_slot */
-	__le16 i_reserved1[1];
+/*90*/	__le16	i_dyn_features;
+	__le16	i_xattr_inline_size;
+	/* XXX: will move it to the location after i_suballoc_slot */
+	__le16	i_suballoc_bit;
+	__le16	i_reserved1[1];
 /*98*/	union {
 		__le64 i_pad1;
 		struct {
@@ -416,7 +506,7 @@ struct cmfs_dinode {
 		struct cmfs_extent_list		i_list;
 		struct cmfs_truncate_log	i_dealloc;
 		struct cmfs_inline_data		i_data;
-		uint8_t				i_symlink[0];
+		u8				i_symlink[0];
 	} id2;
 /* Actual on-disk size is one block (4KB) */
 
@@ -429,13 +519,13 @@ struct cmfs_dinode {
  * unsligned on 32/64-bit platform
  */
 struct cmfs_dir_entry {
-/*00*/	__le64 inode;				/* Inode number */
-	__le16 rec_len;				/* Directory entry length */
-	uint8_t name_len;			/* Name length */
-	uint8_t file_type;
+/*00*/	__le64	inode;				/* Inode number */
+	__le16	rec_len;			/* Directory entry length */
+	u8	name_len;			/* Name length */
+	u8	file_type;
 /*0c*/	char name[CMFS_MAX_FILENAME_LEN];	/* File name */
 /* Actual on-disk length specified by rec_len */
-} __attribute__((packed));
+} __packed;
 
 /*
  * Per-block record for the unindexed directry btree.
@@ -449,12 +539,12 @@ struct cmfs_dir_block_trailer {
 /*00*/	__le64	db_compat_inode;	/* Always zero. Was inode */
 	__le16	db_compat_rec_len;	/* Backwards compatible with
 					   cmfs_dir_entry */
-	uint8_t	db_compat_name_len;	/* Always zero. Was name_len */
-	uint8_t	db_reserved0;
+	u8	db_compat_name_len;	/* Always zero. Was name_len */
+	u8	db_reserved0;
 	__le16	db_reserved1;
 	__le16	db_free_rec_len;	/* Size of largest empty hole
 					   in this block. */
-/*10*/	uint8_t	db_signature[8];	/* Signature for verification */
+/*10*/	u8	db_signature[8];	/* Signature for verification */
 	__le64	db_reserved2;
 /*20*/	__le64	db_free_next;		/* Next block in list */
 	__le64	db_blkno;		/* Offset o disk, in blocks */
@@ -474,32 +564,51 @@ struct cmfs_dir_block_trailer {
  * On disk allocator group structure for CMFS
  */
 struct cmfs_group_desc {
-/*00*/	uint8_t	bg_signature[8];		/* Signature for validation */
-	__le16	bg_size;			/* Size of included bitmap in bytes */
-	__le16	bg_bits;			/* Bits represented by this group */
-	__le16	bg_free_bits_count;		/* Free bits count */
-	__le16	bg_chain;			/* What chain I am in */
+/*00*/	u8	bg_signature[8];	/* Signature for validation */
+	__le16	bg_size;		/* Size of included bitmap in bytes */
+	__le16	bg_bits;		/* Bits represented by this group */
+	__le16	bg_free_bits_count;	/* Free bits count */
+	__le16	bg_chain;		/* What chain I am in */
 /*10*/	__le32	bg_generation;
 	__le32	bg_reserved1;
-	__le64	bg_next_group;			/* Next group in my list, in blocks */
-/*20*/	__le64	bg_parent_dinode;		/* dinode which owns me, in blocks */
-	__le64	bg_blkno;			/* Where desc stored on disk, in blocks */
+	__le64	bg_next_group;		/* Next group in my list, in blocks */
+/*20*/	__le64	bg_parent_dinode;	/* dinode which owns me, in blocks */
+	__le64	bg_blkno;		/* Where desc stored on disk, in
+					   blocks */
 /*30*/	struct cmfs_block_check bg_check;
 	__le64	bg_reserved2;
 /*40*/	union {
-		uint8_t bg_bitmap[0];
+		u8	bg_bitmap[0];
 		struct {
 /* XXX: remove this latter ? */
-			uint8_t bg_bitmap_filler[CMFS_MAX_BG_BITMAP_SIZE];
+			u8	bg_bitmap_filler[CMFS_MAX_BG_BITMAP_SIZE];
 /*140*/			struct cmfs_extent_list bg_list;
 		};
 	};
 /* Actual on-disk size is one block */
 };
 
+
+#ifdef __KERNEL__
+static inline int cmfs_group_bitmap_size(struct super_block *sb,
+					 int suballocator)
+{
+	int size = sb->s_blocksize -
+		offsetof(struct cmfs_group_desc, bg_bitmap);
+
+	return size;
+}
+
+static inline u16 cmfs_local_alloc_size(struct super_block *sb)
+{
+	u16 size;
+	size = sb->s_blocksize -
+		offsetof(struct cmfs_dinode, id2.i_lab.la_bitmap);
+	return size;
+}
+#else
 static inline int cmfs_group_bitmap_size(int blocksize,
-					 int suballocator,
-					 uint32_t feature_incompat)
+					 int suballocator)
 {
 	int size = blocksize -
 		offsetof(struct cmfs_group_desc, bg_bitmap);
@@ -554,39 +663,17 @@ static inline int cmfs_extent_recs_per_inode(int blocksize)
 	return size / (sizeof(struct cmfs_extent_rec));
 }
 
+#endif /* KERNEL */
 
+static inline int cmfs_sprintf_system_inode_name(char *buf,
+						 int len,
+						 int type)
+{
+	int chars;
 
+	chars = snprintf(buf, len, "%s",
+			 cmfs_system_inodes[type].si_name);
+	return chars;
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#endif
+#endif /* CMFS_FS_H */
