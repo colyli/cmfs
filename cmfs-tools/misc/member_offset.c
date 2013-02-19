@@ -80,7 +80,7 @@ void print_cmfs_extent_rec() {
 	START_TYPE(cmfs_extent_rec);
 	SHOW_OFFSET(struct cmfs_extent_rec, e_cpos);
 	SHOW_OFFSET(struct cmfs_extent_rec, e_blkno);
-	SHOW_OFFSET(struct cmfs_extent_rec, e_int_clusters);
+	SHOW_OFFSET(struct cmfs_extent_rec, e_int_blocks);
 	SHOW_OFFSET(struct cmfs_extent_rec, e_leaf_blocks);
 	SHOW_OFFSET(struct cmfs_extent_rec, e_flags);
 	SHOW_OFFSET(struct cmfs_extent_rec, e_reserved1);

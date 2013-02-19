@@ -47,9 +47,6 @@
 
 #define CLEAR_CHUNK	(1<<20)
 
-/* Journal limits (in bytes) */
-#define CMFS_MIN_JOURNAL_SIZE	(4 * (1<<20))
-
 #define SYSTEM_FILE_NAME_MAX	40
 enum {
 	SFI_JOURNAL,

@@ -57,7 +57,6 @@ static SystemFileInfo system_files[] = {
 	{"inode_alloc", SFI_CHAIN, 1, S_IFREG | 0644},
 	{"journal", SFI_JOURNAL, 1, S_IFREG | 0644},
 	{"local_allc", SFI_LOCAL_ALLOC, 1, S_IFREG | 0644},
-	{"truncate_log", SFI_TRUNCATE_LOG, 1, S_IFREG | 0644},
 };
 
 static void version(const char *progname)
@@ -944,7 +943,7 @@ static AllocGroup *initialize_alloc_group(State *s,
 	strcpy((char *)group->gd->bg_signature, CMFS_GROUP_DESC_SIGNATURE);
 	group->gd->bg_generation = s->vol_generation;
 	group->gd->bg_size =
-		(uint32_t)cmfs_group_bitmap_size(s->blocksize, 0, 0);
+		(uint32_t)cmfs_group_bitmap_size(s->blocksize, 0);
 	group->gd->bg_bits = cpg * bpc;
 	group->gd->bg_chain = chain;
 	group->gd->bg_parent_dinode = alloc_inode->fe_off >> s->blocksize_bits;
@@ -1480,11 +1479,13 @@ static void mkfs_set_rec_clusters(State *s,
 				  struct cmfs_extent_rec *rec,
 				  uint32_t clusters)
 {
+	uint64_t blocks;
 	cmfs_filesys fake_fs;
 	char super_buf[CMFS_MAX_BLOCKSIZE];
 
 	fill_fake_fs(s, &fake_fs, super_buf);
-	cmfs_set_rec_clusters(&fake_fs, 0, rec, clusters);
+	blocks = cmfs_clusters_to_blocks(&fake_fs, clusters);
+	cmfs_set_rec_blocks(&fake_fs, 0, rec, blocks);
 }
 
 static void format_file(State *s, SystemFileDiskRecord *rec)
@@ -1537,7 +1538,7 @@ static void format_file(State *s, SystemFileDiskRecord *rec)
 		di->id2.i_chain.cl_count =
 			cmfs_chain_recs_per_inode(s->blocksize);
 		di->id2.i_chain.cl_cpg =
-			cmfs_group_bitmap_size(s->blocksize, 0, 0) * 8;;
+			cmfs_group_bitmap_size(s->blocksize, 0) * 8;;
 		di->id2.i_chain.cl_bpc = 1;
 		/* XXX: why set cl_next_free_rec this way ? */
 		if (s->nr_cluster_groups >

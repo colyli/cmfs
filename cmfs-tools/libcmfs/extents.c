@@ -62,7 +62,7 @@ static void cmfs_swap_extent_list_secondary(cmfs_filesys *fs,
 		rec->e_cpos = bswap_64(rec->e_cpos);
 		rec->e_blkno = bswap_64(rec->e_blkno);
 		if (el->l_tree_depth)
-			rec->e_int_clusters = bswap_64(rec->e_int_clusters);
+			rec->e_int_blocks = bswap_64(rec->e_int_blocks);
 		else
 			rec->e_leaf_blocks = bswap_32(rec->e_leaf_blocks);
 	}
@@ -90,8 +90,25 @@ void cmfs_swap_extent_list_to_cpu(cmfs_filesys *fs,
 	cmfs_swap_extent_list_secondary(fs, obj, el);
 }
 
+errcode_t cmfs_read_extent_block(cmfs_filesys *fs,
+				 uint64_t blkno,
+				 char *eb_buf)
+{
+	return -1;
+}
 
-
+errcode_t cmfs_block_iterate_inode(cmfs_filesys *fs,
+				   struct cmfs_dinode *inode,
+				   int flags,
+				   int (*func)(cmfs_filesys *fs,
+					       uint64_t blkno,
+					       uint64_t bcount,
+					       uint16_t ext_flags,
+					       void *priv_data),
+				   void *priv_data)
+{
+	return -1;
+}
 
 
 
