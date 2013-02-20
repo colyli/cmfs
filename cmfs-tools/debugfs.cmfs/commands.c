@@ -438,7 +438,8 @@ static void do_open(char **args)
 	errcode_t ret = 0;
 	char sysfile[SYSTEM_FILE_NAME_MAX];
 	struct cmfs_super_block *sb;
-	uint64_t superblock = 0, block_size = 0;
+	uint64_t superblock = CMFS_SUPER_BLOCK_BLKNO;
+	uint64_t block_size = CMFS_MIN_BLOCKSIZE;
 
 	if (gbls.device)
 		do_close(NULL);

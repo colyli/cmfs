@@ -49,10 +49,10 @@ FILE *open_pager(int interactive)
 	if (interactive) {
 		signal(SIGPIPE, SIG_IGN);
 		if (pager) {
-			if (strcmp(pager, "__non__") == 0)
+			if (strcmp(pager, "__none__") == 0)
 				return stdout;
 		} else {
-			pager = "more";
+			pager = "/bin/more";
 		}
 		outfile = popen(pager, "w");
 	}

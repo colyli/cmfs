@@ -279,7 +279,6 @@ void dump_inode(FILE *out, struct cmfs_dinode *in)
 	char *str;
 	uint16_t mode;
 	GString *flags = NULL;
-	GString *dyn_features = NULL;
 	char tmp_str[30];
 	struct timespec ts;
 	char timebuf[50];
@@ -332,10 +331,6 @@ void dump_inode(FILE *out, struct cmfs_dinode *in)
 	fprintf(out,
 		"\tType: %s   Attr: 0x%x   Flags: %s\n",
 		str, in->i_attr, flags->str);
-
-	fprintf(out,
-		"\tDynamic Features: (0x%x) %s\n",
-		in->i_dyn_features, dyn_features->str);
 
 	pw = getpwuid(in->i_uid);
 	gr = getgrgid(in->i_gid);
@@ -399,8 +394,6 @@ void dump_inode(FILE *out, struct cmfs_dinode *in)
 
 	if (flags)
 		g_string_free(flags, 1);
-	if (dyn_features)
-		g_string_free(dyn_features, 1);
 	return ;
 }
 
