@@ -8,6 +8,6 @@ who="$who mkfs.cmfs/.deps/ mkfs.cmfs/Makefile mkfs.cmfs/Makefile.in mkfs.cmfs/*.
 who="$who misc/.deps misc/Makefile misc/Makefile.in misc/member_offset misc/member_offset.o"
 who="$who dumpcmfs/*.o dumpcmfs/Makefile dumpcmfs/Makefile.in dumpcmfs/.deps/"
 who="$who libtools-internal/libtools-internal.a libtools-internal/*.o libtools-internal/Makefile libtools-internal/Makefile.in libtools-internal/.deps"
-who="$who debugfs.cmfs/*.o debugfs.cmfs/Makefile debugfs.cmfs/Makefile.in debugfs.cmfs/.deps/"
+who="$who debugfs.cmfs/*.o debugfs.cmfs/Makefile debugfs.cmfs/Makefile.in debugfs.cmfs/.deps/ debugfs.cmfs/debugfs.cmfs"
 
 rm -rf $who
