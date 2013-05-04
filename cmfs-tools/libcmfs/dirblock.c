@@ -137,9 +137,44 @@ errcode_t cmfs_swap_dir_entries_to_cpu(void *buf, uint64_t bytes)
 }
 
 errcode_t cmfs_read_dir_block(cmfs_filesys *fs,
+			       struct cmfs_dinode *di,
+			       uint64_t block,
+			       void *buf)
+{
+	errcode_t ret;
+	int end = fs->fs_blocksize;
+
+	ret = cmfs_read_blocks(fs, block, 1, buf);
+	if (ret)
+		goto out;
+
+	ret = cmfs_swap_dir_entries_to_cpu(buf, end);
+out:
+	return ret;
+
+}
+
+errcode_t cmfs_write_dir_block(cmfs_filesys *fs,
 			      struct cmfs_dinode *di,
 			      uint64_t block,
-			      void *buf)
+			      void *inbuf)
 {
-	return -1;
+	errcode_t ret;
+	char *buf = NULL;
+	int end = fs->fs_blocksize;
+
+	ret = cmfs_malloc_block(fs->fs_io, &buf);
+	if (ret)
+		return ret;
+
+	memcpy(buf, inbuf, fs->fs_blocksize);
+
+	ret = cmfs_swap_dir_entries_from_cpu(buf, end);
+	if (ret)
+		goto out;
+
+	ret = io_write_block(fs->fs_io, block, 1, buf);
+out:
+	cmfs_free(&buf);
+	return ret;
 }

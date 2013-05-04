@@ -4,10 +4,8 @@
  * lookup.c
  *
  * Directory lookup routines for the CMFS userspace library.
- * (Copied and modified from ocfs2-tools/libocfs2/lookup.c)
  *
  * Copyright (C) 2004 Oracle.  All rights reserved.
- * CMFS modification, by Coly Li <i@coly.li>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public
@@ -30,12 +28,13 @@
 #define _XOPEN_SOURCE 600 /* Triggers magic in features.h */
 #define _LARGEFILE64_SOURCE
 
+#include <com_err.h>
 #include <string.h>
 #include <inttypes.h>
 #include <assert.h>
 
-#include "cmfs/cmfs.h"
-
+#include <cmfs/cmfs.h>
+#include "cmfs_err.h"
 
 struct lookup_struct  {
 	const char	*name;
@@ -44,6 +43,24 @@ struct lookup_struct  {
 	int		found;
 };	
 
+static int lookup_proc(struct cmfs_dir_entry *dirent,
+		       uint64_t blocknr,
+		       int offset,
+		       int blocksize,
+		       char *buf,
+		       void *priv_data)
+{
+	struct lookup_struct *ls = (struct lookup_struct *)priv_data;
+
+	if (ls->len != (dirent->name_len & 0xff))
+		return 0;
+	if (strncmp(ls->name, dirent->name, (dirent->name_len & 0xff)))
+		return 0;
+	*ls->inode = dirent->inode;
+	ls->found++;
+	return CMFS_DIRENT_ABORT;
+}
+
 errcode_t cmfs_lookup(cmfs_filesys *fs,
 		      uint64_t dir,
 		      const char *name,
@@ -51,5 +68,37 @@ errcode_t cmfs_lookup(cmfs_filesys *fs,
 		      char *buf,
 		      uint64_t *inode)
 {
-	return -1;
+	errcode_t ret;
+	struct lookup_struct ls;
+	char *di_buf = NULL;
+
+	ls.name = name;
+	ls.len = namelen;
+	ls.inode = inode;
+	ls.found = 0;
+
+	ret = cmfs_malloc_block(fs->fs_io, &di_buf);
+	if (ret)
+		goto out;
+	ret = cmfs_read_inode(fs, dir, di_buf);
+	if (ret)
+		goto out;
+
+	ret = cmfs_dir_iterate(fs,
+			       dir,
+			       0,
+			       buf,
+			       lookup_proc,
+			       &ls);
+	if (ret)
+		goto out;
+
+	ret = (ls.found) ? 0 : CMFS_ET_FILE_NOT_FOUND;
+out:
+	if (di_buf)
+		cmfs_free(&di_buf);
+
+	return ret;
 }
+
+

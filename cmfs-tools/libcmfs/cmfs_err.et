@@ -75,7 +75,24 @@ ec	CMFS_ET_BAD_INODE_MAGIC,
 ec	CMFS_ET_BAD_BLKNO,
 	"Invalid block number"
 
+ec	CMFS_ET_RO_FILESYS,
+	"Attempt to write to filesystem opened read-only"
+
 ec	CMFS_ET_NO_SPACE,
 	"No space available"
 
+ec	CMFS_ET_FILE_NOT_FOUND,
+	"Directory entry not found"
+
+ec	CMFS_ET_INODE_NOT_VALID,
+	"Inode is not valid (active)"
+
+ec	CMFS_ET_INODE_CANNOT_BE_ITERATED,
+	"Inode type does not contain extents"
+
+ec	CMFS_ET_BAD_EXTENT_BLOCK_MAGIC,
+	"Bad magic number in extent block"
+
+ec	CMFS_ET_CORRUPT_EXTENT_BLOCK,
+	"Extent block is corrupt"
 	end

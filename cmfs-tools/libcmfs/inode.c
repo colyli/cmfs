@@ -257,7 +257,12 @@ errcode_t cmfs_read_inode(cmfs_filesys *fs,
 	return -1;
 }
 
-
+errcode_t cmfs_write_inode(cmfs_filesys *fs,
+			   uint64_t blkno,
+			   char *inode_buf)
+{
+	return -1;
+}
 
 
 

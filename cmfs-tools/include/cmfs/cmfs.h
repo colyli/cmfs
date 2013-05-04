@@ -47,7 +47,21 @@
 #define CMFS_FLAG_NO_ECC_CHECKS		0x40
 #define CMFS_FLAG_HARD_RO		0x80
 
+/* Return flags for the directory iterator functions */
+#define CMFS_DIRENT_CHANGED	0x01
+#define CMFS_DIRENT_ABORT	0x02
+#define CMFS_DIRENT_ERROR	0x04
 
+/* Directory iterator flags */
+#define CMFS_DIRENT_FLAG_INCLUDE_EMPTY		0x01
+#define CMFS_DIRENT_FLAG_INCLUDE_REMOVED	0x02
+#define CMFS_DIRENT_FLAG_EXCLUDE_DOTS		0x04
+
+/* Directory constants */
+#define CMFS_DIRENT_DOT_FILE		1
+#define CMFS_DIRENT_DOT_DOT_FILE	2
+#define CMFS_DIRENT_OTHER_FILE		3
+#define CMFS_DIRENT_DELETED_FILE		4
 
 /* Check if mounted flags */
 #define CMFS_MF_MOUNTED			0x01
@@ -55,6 +69,51 @@
 #define CMFS_MF_READONLY		0x04
 #define CMFS_MF_SWAP			0x08
 #define CMFS_MF_BUSY			0x10
+
+/* Return flags for the extent iterator functions */
+#define CMFS_EXTENT_CHANGED		0x01
+#define CMFS_EXTENT_ABORT		0x02
+#define CMFS_EXTENT_ERROR		0x04
+
+/*
+ * Extent iterate flags
+ *
+ * CMFS_EXTENT_FLAG_APPEND indicates that the iterator function should
+ * be called on extents past the leaf next_free_rec. This is used by
+ * cmfs_expend_dir() to add a new extent to a directory (via
+ * CMFS_BLOCK_FLAG_APPEND and the block iteration function)
+ *
+ * CMFS_EXTENT_FLAG_DEPTH_TRAVERSE indicates that the iterator
+ * function for tree_depth > 0 records (cmfs_extent_blocks, iow)
+ * should be called after all of the extents contained in the
+ * extent_block are processed. This is useful if you are going to be
+ * deallocating extents.
+ *
+ * CMFS_EXTENT_FLAG_DATA_ONLY indicates that the iterator function
+ * should be called for data extents (depth == 0) only.
+ */
+#define CMFS_EXTENT_FLAG_APPEND			0x01
+#define CMFS_EXTENT_FLAG_DEPTH_TRAVERSE		0x02
+#define CMFS_EXTENT_FLAG_DATA_ONLY		0x04
+
+/* Return flags for the block iterator functions */
+#define CMFS_BLOCK_CHANGED	0x01
+#define CMFS_BLOCK_ABORT	0x02
+#define CMFS_BLOCK_ERROR	0x04
+
+/*
+ * Block iterate flags
+ *
+ * In CMFS, block iteration runs through the blocks contained in
+ * an inode's data extents. As such, "DATA_ONLY" and "DEPTH_TRAVERSE"
+ * can't really apply.
+ *
+ * CMFS_BLOCK_FLAG_APPEND is as CMFS_EXTENT_FLAG_APPEND, except on a
+ * blocksize basis. This may mean that the underlying extent already
+ * contains the space for a new block, and i_size is updated
+ * accordingly.
+ */
+#define CMFS_BLOCK_FLAG_APPEND	0x01
 
 /* define CMFS_SB for cmfs-tools */
 #define CMFS_SB(sb)	(sb)
@@ -245,6 +304,9 @@ errcode_t cmfs_dir_iterate(cmfs_filesys *fs,
 errcode_t cmfs_read_inode(cmfs_filesys *fs,
 			  uint64_t blkno,
 			  char *inode_buf);
+errcode_t cmfs_write_inode(cmfs_filesys *fs,
+			  uint64_t blkno,
+			  char *inode_buf);
 errcode_t cmfs_read_group_desc(cmfs_filesys *fs,
 			       uint64_t blkno,
 			       char *gd_buf);
@@ -299,6 +361,21 @@ errcode_t cmfs_read_dir_block(cmfs_filesys *fs,
 errcode_t cmfs_snprint_feature_flags(char *str,
 				     size_t size,
 				     cmfs_fs_options *flags);
+errcode_t cmfs_namei(cmfs_filesys *fs,
+		     uint64_t root,
+		     uint64_t cwd,
+		     const char *name,
+		     uint64_t *inode);
+errcode_t cmfs_read_blocks(cmfs_filesys *fs,
+			   uint64_t blkno,
+			   int count,
+			   char *data);
+errcode_t io_write_block(io_channel *channel, int64_t blkno, int count,
+			 const char *data);
+errcode_t cmfs_write_dir_block(cmfs_filesys *fs,
+			      struct cmfs_dinode *di,
+			      uint64_t block,
+			      void *inbuf);
 
 /*
  * ${foo}_to_${bar} is a floor function. blocks_to_clusters() will
@@ -424,6 +501,18 @@ static inline void cmfs_set_rec_blocks(cmfs_filesys *fs,
 		rec->e_leaf_blocks = blocks;
 }
 
+static inline int is_dots(const char *name, unsigned int len)
+{
+	if (len == 0)
+		return 0;
+	if (name[0] == '.') {
+		if (len == 1)
+			return 1;
+		if (len == 2 && name[1] == '.')
+			return 1;
+	}
+	return 0;
+}
 
 
 
