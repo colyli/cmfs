@@ -33,8 +33,19 @@
 #if HAVE_UNISTD_H
 #include <unistd.h>
 #endif
-
+#include <sys/stat.h>
 #include <cmfs/cmfs.h>
+#include "cmfs_err.h"
+
+static errcode_t open_namei(cmfs_filesys *fs,
+			    uint64_t root,
+			    uint64_t base,
+			    const char *pathname,
+			    size_t pathlen,
+			    int follow,
+			    int link_count,
+			    char *buf,
+			    uint64_t *res_inode);
 
 
 static errcode_t follow_link(cmfs_filesys *fs,
@@ -45,7 +56,69 @@ static errcode_t follow_link(cmfs_filesys *fs,
 			     char *buf,
 			     uint64_t *res_inode)
 {
-	return -1;
+	char *pathname;
+	char *buffer = NULL;
+	errcode_t ret;
+	struct cmfs_dinode *di = NULL;
+	struct cmfs_extent_list *el;
+	uint64_t blkno;
+
+#if NAMEI_DEBUG
+	printf("%s:%d: root=%lu, inode=%lu, link_count=%d\n",
+		__func__, __LINE__, root, dir, inode, link_count);
+#endif
+	ret = cmfs_malloc_block(fs->fs_io, &di);
+	if (ret)
+		goto bail;
+
+	ret = cmfs_read_inode(fs, inode, (char *)di);
+	if (ret)
+		goto bail;
+
+	if (!S_ISLNK(di->i_mode)) {
+		*res_inode = inode;
+		ret = 0;
+		goto bail;
+	}
+
+	if (link_count ++ > 5) {
+		ret = CMFS_ET_SYMLINK_LOOP;
+		goto bail;
+	}
+	el = &(di->id2.i_list);
+
+	if (!di->i_clusters || !el->l_next_free_rec) {
+		ret = CMFS_ET_INTERNAL_FAILURE;
+		goto bail;
+	}
+
+	blkno = el->l_recs[0].e_blkno;
+
+	ret = cmfs_malloc_block(fs->fs_io, &buffer);
+	if (ret)
+		goto bail;
+
+	ret = cmfs_read_blocks(fs, blkno, 1, buffer);
+	if (ret)
+		goto bail;
+
+	pathname = buffer;
+	ret = open_namei(fs,
+			 root,
+			 dir,
+			 pathname,
+			 di->i_size,
+			 1,
+			 link_count,
+			 buf,
+			 res_inode);
+
+bail:
+	if (buffer)
+		cmfs_free(&buffer);
+	if (di)
+		cmfs_free(&di);
+	return ret;
 }
 
 

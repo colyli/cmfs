@@ -95,4 +95,8 @@ ec	CMFS_ET_BAD_EXTENT_BLOCK_MAGIC,
 
 ec	CMFS_ET_CORRUPT_EXTENT_BLOCK,
 	"Extent block is corrupt"
+
+ec	CMFS_ET_SYMLINK_LOOP,
+	"Too many symbolink links encountered"
+
 	end
