@@ -248,7 +248,29 @@ void cmfs_swap_inode_to_cpu(cmfs_filesys *fs, struct cmfs_dinode *di)
 errcode_t cmfs_check_directory(cmfs_filesys *fs,
 			       uint64_t dir)
 {
-	return -1;
+	struct cmfs_dinode *inode;
+	char *buf;
+	errcode_t ret;
+
+	if ((dir < CMFS_SUPER_BLOCK_BLKNO) ||
+	    (dir > fs->fs_blocks))
+		return CMFS_ET_BAD_BLKNO;
+
+	ret = cmfs_malloc_block(fs->fs_io, &buf);
+	if (ret)
+		return ret;
+
+	ret = cmfs_read_inode(fs, dir, buf);
+	if (ret)
+		goto out;
+
+	inode = (struct cmfs_dinode *)buf;
+	if (!S_ISDIR(inode->i_mode))
+		ret = CMFS_ET_NO_DIRECTORY;
+
+out:
+	cmfs_free(&buf);
+	return ret;
 }
 
 errcode_t cmfs_read_inode(cmfs_filesys *fs,
