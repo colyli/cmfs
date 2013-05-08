@@ -30,7 +30,7 @@
 #include <cmfs/byteorder.h>
 #include <cmfs/cmfs.h>
 #include <cmfs-kernel/cmfs_fs.h>
-
+#include "cmfs_err.h"
 
 static void cmfs_swap_group_desc_header(struct cmfs_group_desc *gd)
 {
@@ -67,5 +67,35 @@ errcode_t cmfs_read_group_desc(cmfs_filesys *fs,
 			       uint64_t blkno,
 			       char *gd_buf)
 {
-	return -1;
+	errcode_t ret;
+	char *blk;
+	struct cmfs_group_desc *gd;
+
+	if ((blkno < CMFS_SUPER_BLOCK_BLKNO) ||
+	    (blkno > fs->fs_blocks))
+		return CMFS_ET_BAD_BLKNO;
+
+	ret = cmfs_malloc_block(fs->fs_io, &blk);
+	if (ret)
+		return ret;
+
+	ret = cmfs_read_blocks(fs, blkno, 1, blk);
+	if (ret)
+		goto out;
+
+	gd = (struct cmfs_group_desc *)blk;
+	ret = CMFS_ET_BAD_GROUP_DESC_MAGIC;
+	if (memcpy(gd->bg_signature, CMFS_GROUP_DESC_SIGNATURE,
+		   strlen(CMFS_GROUP_DESC_SIGNATURE)))
+		goto out;
+
+	memcpy(gd_buf, blk, fs->fs_blocksize);
+
+	gd = (struct cmfs_group_desc *)gd_buf;
+	cmfs_swap_group_desc_to_cpu(fs, gd);
+
+	ret = 0;
+out:
+	cmfs_free(&blk);
+	return ret;
 }

@@ -45,6 +45,9 @@ ec	CMFS_ET_INVALID_ARGUMENT,
 ec	CMFS_ET_INTERNAL_FAILURE,
 	"Internal logic failure"
 
+ec	CMFS_ET_BAD_GROUP_DESC_MAGIC,
+	"Bad magic number in group descriptor"
+
 ec	CMFS_ET_UNEXPECTED_BLOCK_SIZE,
 	"Filesystem has unexpected block size"
 
