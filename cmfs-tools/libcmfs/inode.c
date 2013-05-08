@@ -38,6 +38,7 @@
 #include <cmfs/byteorder.h>
 #include <cmfs-kernel/cmfs_fs.h>
 #include <cmfs/cmfs.h>
+#include "cmfs_err.h"
 
 /*
  * XXX: should check cmfs_dinode in include/cmfs-kenrel/cmfs_fs.h
@@ -254,14 +255,74 @@ errcode_t cmfs_read_inode(cmfs_filesys *fs,
 			  uint64_t blkno,
 			  char *inode_buf)
 {
-	return -1;
+	errcode_t ret;
+	char *blk;
+	struct cmfs_dinode *di;
+
+	if ((blkno < CMFS_SUPER_BLOCK_BLKNO) ||
+	    (blkno < fs->fs_blocks))
+		return CMFS_ET_BAD_BLKNO;
+
+	ret = cmfs_malloc_block(fs->fs_io, &blk);
+	if (ret)
+		return ret;
+
+	ret = cmfs_read_blocks(fs, blkno, 1, blk);
+	if (ret)
+		goto out;
+
+	di = (struct cmfs_dinode *)blk;
+	ret = CMFS_ET_BAD_INODE_MAGIC;
+	if (memcpy(di->i_signature, CMFS_INODE_SIGNATURE,
+		   strlen(CMFS_INODE_SIGNATURE)))
+		goto out;
+
+	memcpy(inode_buf, blk, fs->fs_blocksize);
+	di = (struct cmfs_dinode *)inode_buf;
+	cmfs_swap_inode_to_cpu(fs, di);
+
+	ret = 0;
+
+out:
+	cmfs_free(&blk);
+	return ret;
 }
 
 errcode_t cmfs_write_inode(cmfs_filesys *fs,
 			   uint64_t blkno,
 			   char *inode_buf)
 {
-	return -1;
+	errcode_t ret;
+	char *blk;
+	struct cmfs_dinode *di;
+
+	if (!(fs->fs_flags & CMFS_FLAG_RW))
+		return CMFS_ET_RO_FILESYS;
+
+	if ((blkno < CMFS_SUPER_BLOCK_BLKNO) ||
+	    (blkno < fs->fs_blocks))
+		return CMFS_ET_BAD_BLKNO;
+
+	ret = cmfs_malloc_block(fs->fs_io, &blk);
+	if (ret)
+		return ret;
+
+	memcpy(blk, inode_buf, fs->fs_blocksize);
+
+	di = (struct cmfs_dinode *)blk;
+	cmfs_swap_inode_from_cpu(fs, di);
+
+	ret = io_write_block(fs->fs_io, blkno, 1, blk);
+	if (ret)
+		goto out;
+
+	fs->fs_flags |= CMFS_FLAG_CHANGED;
+	ret = 0;
+
+out:
+	cmfs_free(&blk);
+
+	return ret;
 }
 
 
