@@ -376,6 +376,13 @@ errcode_t cmfs_write_dir_block(cmfs_filesys *fs,
 			      struct cmfs_dinode *di,
 			      uint64_t block,
 			      void *inbuf);
+void cmfs_bitmap_free(cmfs_bitmap *bitmap);
+errcode_t cmfs_extent_map_get_blocks(cmfs_cached_inode *cinode,
+				     uint64_t v_blkno,
+				     int count,
+				     uint64_t *p_blkno,
+				     uint64_t *ret_count,
+				     uint16_t *extent_flags);
 
 /*
  * ${foo}_to_${bar} is a floor function. blocks_to_clusters() will
