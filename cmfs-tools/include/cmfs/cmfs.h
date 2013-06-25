@@ -383,6 +383,13 @@ errcode_t cmfs_extent_map_get_blocks(cmfs_cached_inode *cinode,
 				     uint64_t *p_blkno,
 				     uint64_t *ret_count,
 				     uint16_t *extent_flags);
+int cmfs_find_leaf(cmfs_filesys *fs,
+		   struct cmfs_dinode *di,
+		   uint64_t cpos,
+		   char **leaf_buf);
+int cmfs_search_extent_list(cmfs_filesys *fs,
+			    struct cmfs_extent_list *el,
+			    uint64_t v_cluster);
 
 /*
  * ${foo}_to_${bar} is a floor function. blocks_to_clusters() will
