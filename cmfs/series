@@ -3,3 +3,4 @@
 0003-cmfs-basic-mount-implementation.patch
 0004-cmfs-basic-jbd2-journal-support.patch
 0005-cmfs-module-init-and-exit.patch
+0006-cmfs-fix-deadlock-in-cmfs_get_sector.patch
