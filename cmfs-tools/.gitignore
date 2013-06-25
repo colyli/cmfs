@@ -39,6 +39,7 @@ libcmfs/libcmfs_a-dir_iterate.o
 libcmfs/libcmfs_a-dirblock.o
 libcmfs/libcmfs_a-extent_map.o
 libcmfs/libcmfs_a-extents.o
+libcmfs/libcmfs_a-extent_tree.o
 libcmfs/libcmfs_a-feature_string.o
 libcmfs/libcmfs_a-fileio.o
 libcmfs/libcmfs_a-freefs.o
@@ -72,4 +73,3 @@ mkfs.cmfs/Makefile.in
 mkfs.cmfs/mkfs.cmfs
 mkfs.cmfs/mkfs_cmfs-check.o
 mkfs.cmfs/mkfs_cmfs-mkfs.o
-
