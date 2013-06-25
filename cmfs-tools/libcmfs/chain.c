@@ -2,10 +2,12 @@
  * vim: noexpandtab sw=8 ts=8 sts=0:
  *
  * chain.c
- *
- * Iterate over allocation chains.  Part of the OCFS2 userspace library.
+ * 
+ * Iterate over allocation chains.  Part of the CMFS userspace library.
+ * (copied and modified from ocfs2-tools/libocfs2/chain.c)
  *
  * Copyright (C) 2004 Oracle.  All rights reserved.
+ * CMFS modification, by Coly Li <i@coly.li>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public
