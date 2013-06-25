@@ -57,6 +57,7 @@ static SystemFileInfo system_files[] = {
 	{"inode_alloc", SFI_CHAIN, 1, S_IFREG | 0644},
 	{"journal", SFI_JOURNAL, 1, S_IFREG | 0644},
 	{"local_allc", SFI_LOCAL_ALLOC, 1, S_IFREG | 0644},
+	{"truncate_log", SFI_TRUNCATE_LOG, 1, S_IFREG | 0644}
 };
 
 static void version(const char *progname)
@@ -1859,7 +1860,11 @@ int main(int argc, char **argv)
 		num = system_files[i].global ? 1: s->initial_slots;
 		for (j = 0; j < num; j++) {
 			record[i][j].fe_off = alloc_inode(s, &(record[i][j].suballoc_bit));
-			sprintf(fname, system_files[i].name, j);
+			if (num == 1)
+				sprintf(fname, system_files[i].name);
+			else
+				sprintf(fname, system_files[i].name, j);
+
 			add_entry_to_directory(
 				s, system_dir, fname,
 				record[i][j].fe_off,
