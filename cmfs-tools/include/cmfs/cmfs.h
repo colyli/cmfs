@@ -416,7 +416,7 @@ static inline uint64_t cmfs_clusters_to_blocks(cmfs_filesys *fs,
 	return (uint64_t)(clusters << c_to_b_bits);
 }
 
-static inline uint32_t cmfs_blocks_to_clusters(cmfs_filesys *fs,
+static inline uint64_t cmfs_blocks_to_clusters(cmfs_filesys *fs,
 					       uint64_t blocks)
 {
 	int b_to_c_bits =
@@ -424,10 +424,10 @@ static inline uint32_t cmfs_blocks_to_clusters(cmfs_filesys *fs,
 		CMFS_RAW_SB(fs->fs_super)->s_blocksize_bits;
 	uint64_t ret = blocks >> b_to_c_bits;
 
-	if (ret > UINT32_MAX)
-		ret = UINT32_MAX;
+	if (ret > UINT64_MAX)
+		ret = UINT64_MAX;
 
-	return (uint32_t)ret;
+	return (uint64_t)ret;
 }
 
 
@@ -467,27 +467,41 @@ static inline int cmfs_swap_barrier(cmfs_filesys *fs,
 }
 
 /*
- * Helper function to look at the # of clusters in an extent record
+ * Helper function to look at the # of blocks in an extent record
  */
-static inline uint32_t cmfs_rec_clusters(cmfs_filesys *fs,
-					 uint16_t tree_depth,
-					 struct cmfs_extent_rec *rec)
+static inline uint64_t cmfs_rec_blocks(cmfs_filesys *fs,
+				       uint16_t tree_depth,
+				       struct cmfs_extent_rec *rec)
 {
 	uint64_t ret;
 	/*
-	 * Cluster count in extent records is slightly different
+	 * blocks count in extent records is slightly different
 	 * between interior nodes and leaf nodes. This is to
 	 * support unwritten extents which need a flags field
 	 * in leaf node records, thus shrinking the available
-	 * space for a clusters field.
+	 * space for a block field.
 	 */
 	if (tree_depth)
 		ret = rec->e_int_blocks;
 	else
 		ret = rec->e_leaf_blocks;
-	
-	return (uint32_t)cmfs_blocks_to_clusters(
-					fs, ret);
+
+	return ret;
+}
+
+/*
+ * Helper function to look at the # of clusters in an extent record
+ */
+static inline uint64_t cmfs_rec_clusters(cmfs_filesys *fs,
+					 uint16_t tree_depth,
+					 struct cmfs_extent_rec *rec)
+{
+	uint64_t ret;
+       
+	ret = cmfs_rec_blocks(fs, tree_depth, rec);	
+	ret = cmfs_blocks_to_clusters(fs, ret);
+
+	return ret;
 }
 
 static inline uint32_t cmfs_clusters_in_bytes(cmfs_filesys *fs,
