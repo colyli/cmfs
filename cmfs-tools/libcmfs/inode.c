@@ -282,7 +282,7 @@ errcode_t cmfs_read_inode(cmfs_filesys *fs,
 	struct cmfs_dinode *di;
 
 	if ((blkno < CMFS_SUPER_BLOCK_BLKNO) ||
-	    (blkno < fs->fs_blocks))
+	    (blkno > fs->fs_blocks))
 		return CMFS_ET_BAD_BLKNO;
 
 	ret = cmfs_malloc_block(fs->fs_io, &blk);
@@ -295,7 +295,7 @@ errcode_t cmfs_read_inode(cmfs_filesys *fs,
 
 	di = (struct cmfs_dinode *)blk;
 	ret = CMFS_ET_BAD_INODE_MAGIC;
-	if (memcpy(di->i_signature, CMFS_INODE_SIGNATURE,
+	if (memcmp(di->i_signature, CMFS_INODE_SIGNATURE,
 		   strlen(CMFS_INODE_SIGNATURE)))
 		goto out;
 
@@ -322,7 +322,7 @@ errcode_t cmfs_write_inode(cmfs_filesys *fs,
 		return CMFS_ET_RO_FILESYS;
 
 	if ((blkno < CMFS_SUPER_BLOCK_BLKNO) ||
-	    (blkno < fs->fs_blocks))
+	    (blkno > fs->fs_blocks))
 		return CMFS_ET_BAD_BLKNO;
 
 	ret = cmfs_malloc_block(fs->fs_io, &blk);
