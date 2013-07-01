@@ -1475,17 +1475,15 @@ got_it:
 	return;
 }
 
-static void mkfs_set_rec_clusters(State *s,
-				  uint16_t tree_depth,
-				  struct cmfs_extent_rec *rec,
-				  uint32_t clusters)
+static void mkfs_set_rec_blocks(State *s,
+				uint16_t tree_depth,
+				struct cmfs_extent_rec *rec,
+				uint64_t blocks)
 {
-	uint64_t blocks;
 	cmfs_filesys fake_fs;
 	char super_buf[CMFS_MAX_BLOCKSIZE];
 
 	fill_fake_fs(s, &fake_fs, super_buf);
-	blocks = cmfs_clusters_to_blocks(&fake_fs, clusters);
 	cmfs_set_rec_blocks(&fake_fs, 0, rec, blocks);
 }
 
@@ -1493,11 +1491,13 @@ static void format_file(State *s, SystemFileDiskRecord *rec)
 {
 	struct cmfs_dinode *di;
 	int i;
-	uint32_t clusters;
+	uint64_t clusters, blocks;
 	AllocBitmap *bitmap;
 
 	clusters = (rec->extent_len + s->cluster_size - 1) >>
 		   s->cluster_size_bits;
+	blocks = (rec->extent_len + s->cluster_size - 1) >>
+		   s->blocksize_bits;
 
 	di = do_malloc(s, s->blocksize);
 	memset(di, 0, s->blocksize);
@@ -1595,10 +1595,10 @@ static void format_file(State *s, SystemFileDiskRecord *rec)
 	if (rec->extent_len) {
 		di->id2.i_list.l_next_free_rec = 1;
 		di->id2.i_list.l_recs[0].e_cpos = 0;
-		mkfs_set_rec_clusters(s,
-				      0,
-				      &di->id2.i_list.l_recs[0],
-				      clusters);
+		mkfs_set_rec_blocks(s,
+				    0,
+				    &di->id2.i_list.l_recs[0],
+				    blocks);
 		di->id2.i_list.l_recs[0].e_blkno =
 			rec->extent_off >> s->blocksize_bits;
 	} else if (S_ISDIR(di->i_mode) &&
